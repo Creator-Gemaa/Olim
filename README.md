@@ -15,7 +15,7 @@ The migrations in `supabase/migrations` have already been applied to project `wj
 ## Run locally
 Requires Node.js 20.19+ and npm.
 1. Copy `.env.example` to `.env.local`.
-2. Keep the Supabase URL and publishable key from the example (or replace them with the matching project values).
+2. Keep the Supabase URL and legacy anon public key from the example (or replace them with the matching project values).
 3. Run `npm install`, then `npm run dev`.
 4. Open the local address printed by Vite.
 
