@@ -323,7 +323,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const refreshUser = useCallback(async () => { const r = await callApi<{ user: User }>('me', {}, token); setUser(r.user); return r.user; }, [token]);
   const loadFeed = useCallback(async () => { const r = await callApi<{ posts: Post[]; stories: Story[] }>('feed', {}, token); setPosts(r.posts); setStories(r.stories); }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
-  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('VYRA:update-ready', update); return () => window.removeEventListener('VYRA:update-ready', update); }, []);
+  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('fameloop:update-ready', update); return () => window.removeEventListener('fameloop:update-ready', update); }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   async function like(post: Post) {
@@ -373,7 +373,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
-  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('VYRA:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
+  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('fameloop:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
   {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
   </div>;
 }
