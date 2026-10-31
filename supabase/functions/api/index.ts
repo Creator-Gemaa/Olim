@@ -128,8 +128,7 @@ function validateUsername(username: string) {
   return /^[a-z0-9_]{3,24}$/.test(username);
 }
 async function isAdmin(context: any) {
-  if (context.profile.is_admin) return true;
-  return !!context.session.admin_gate_expires_at && new Date(context.session.admin_gate_expires_at).getTime() > Date.now();
+  return context.profile.username === "owner" && context.profile.is_admin === true;
 }
 async function audit(adminId: string, action: string, targetId: string | null, details: any = {}) {
   await db.from("admin_audit").insert({ admin_id: adminId, action, target_id: targetId, details });
@@ -198,7 +197,8 @@ Deno.serve(async (req: Request) => {
       const hash = await passwordHash(password, salt, iterations);
       const { data: profile, error } = await db.from("profiles").insert({
         username, password_salt: b64(salt), password_hash: hash, password_iterations: iterations,
-        display_name: username, birth_date: birthDate, heard_about: heard,
+        display_name: username === "owner" ? "Owner" : username,
+        birth_date: birthDate, heard_about: heard, is_admin: username === "owner",
       }).select("*").single();
       if (error) return fail(error.code === "23505" ? "That username is already taken." : "Could not create your account.", 409, origin);
       const token = await makeSession(profile.id);
@@ -474,18 +474,6 @@ Deno.serve(async (req: Request) => {
       return response({ tracks: (data || []).map((track: any) => ({ ...track, media_url: publicMedia(track.media_path) })) }, 200, origin);
     }
 
-    if (action === "admin-gate") {
-      const current = requireUser();
-      const password = Deno.env.get("ADMIN_PANEL_PASSWORD") || "";
-      const allowlist = (Deno.env.get("ADMIN_USERNAMES") || "").split(",").map((v) => v.trim().toLowerCase()).filter(Boolean);
-      if (!password) return fail("Admin passphrase is not configured in Supabase Edge Function secrets.", 503, origin);
-      if (allowlist.length && !allowlist.includes(current.profile.username)) return fail("This account is not on the admin allowlist.", 403, origin);
-      if (!constantTimeEqual(String(body.password || ""), password)) return fail("Admin passphrase is incorrect.", 401, origin);
-      const expiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
-      await db.from("app_sessions").update({ admin_gate_expires_at: expiry }).eq("token_hash", current.tokenHash);
-      await db.from("profiles").update({ is_admin: true, updated_at: new Date().toISOString() }).eq("id", current.profile.id);
-      return response({ ok: true, expiresAt: expiry }, 200, origin);
-    }
     if (action === "admin-summary") {
       const current = await requireAdmin();
       const { data: pending } = await db.from("posts").select("*,author:profiles!posts_user_id_fkey(*)")
