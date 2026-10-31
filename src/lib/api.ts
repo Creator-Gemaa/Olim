@@ -10,9 +10,39 @@ export const supabase = createClient(url || 'https://example.supabase.co', key |
 });
 const apiUrl = (url || '').replace(/\/$/, '') + '/functions/v1/api';
 const storageKey = 'vyra_session_v1';
-export function getSessionToken(): string | null { return sessionStorage.getItem(storageKey); }
-export function setSessionToken(value: string): void { sessionStorage.setItem(storageKey, value); }
-export function clearSessionToken(): void { sessionStorage.removeItem(storageKey); }
+
+/**
+ * Keep the custom VYRA session token across browser/app restarts.
+ * Migrate the previous tab-only token once so existing signed-in creators
+ * do not get unexpectedly logged out during this update.
+ */
+export function getSessionToken(): string | null {
+  try {
+    const saved = localStorage.getItem(storageKey);
+    if (saved) return saved;
+    const legacy = sessionStorage.getItem(storageKey);
+    if (legacy) {
+      localStorage.setItem(storageKey, legacy);
+      sessionStorage.removeItem(storageKey);
+      return legacy;
+    }
+  } catch {
+    try { return sessionStorage.getItem(storageKey); } catch { return null; }
+  }
+  return null;
+}
+export function setSessionToken(value: string): void {
+  try {
+    localStorage.setItem(storageKey, value);
+    sessionStorage.removeItem(storageKey);
+  } catch {
+    try { sessionStorage.setItem(storageKey, value); } catch { /* Storage can be disabled by the device. */ }
+  }
+}
+export function clearSessionToken(): void {
+  try { localStorage.removeItem(storageKey); } catch { /* Continue clearing the tab-scoped fallback. */ }
+  try { sessionStorage.removeItem(storageKey); } catch { /* Storage can be disabled by the device. */ }
+}
 
 export async function callApi<T = any>(action: string, payload: Record<string, unknown> = {}, token = getSessionToken()): Promise<T> {
   if (!url || !key) throw new Error('VYRA is not configured. Add your Supabase URL and publishable key.');
