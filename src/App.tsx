@@ -354,8 +354,13 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
     try {
       const duration = file.type.startsWith('video/') ? await videoDuration(file) : 0;
       const category = file.type.startsWith('video/') ? classifyVideo(duration) : 'photo';
+      const generatedCopy = kind === 'post' && file.type.startsWith('video/')
+        ? generateVideoCopy(file, duration)
+        : null;
       await uploadMedia(file, kind, token, {
-        caption, durationSeconds: duration, category,
+        title: generatedCopy?.title,
+        caption: caption.trim() || generatedCopy?.description || caption,
+        durationSeconds: duration, category,
         rightsConfirmation: 'I own or have permission to publish this media.',
         audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined,
       });
@@ -380,9 +385,9 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
     <div className="modal-card upload-modal-card">
       <div className="modal-top"><div><p className="eyebrow">MAKE SOMETHING MATTER</p><h2>Create a moment</h2></div><button className="icon-button" onClick={onClose} disabled={bulkBusy || busy}><X /></button></div>
       <div className="segmented upload-mode-tabs">
-        <button className={kind === 'post' && !bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(false); }}>Single post</button>
-        <button className={kind === 'post' && bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(true); }}>Bulk videos</button>
-        <button className={kind === 'story' ? 'active' : ''} onClick={() => { setKind('story'); setBulkMode(false); }}>24h Story</button>
+        <button disabled={bulkBusy || busy} className={kind === 'post' && !bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(false); }}>Single post</button>
+        <button disabled={bulkBusy || busy} className={kind === 'post' && bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(true); }}>Bulk videos</button>
+        <button disabled={bulkBusy || busy} className={kind === 'story' ? 'active' : ''} onClick={() => { setKind('story'); setBulkMode(false); }}>24h Story</button>
       </div>
 
       {bulkMode ? <>
