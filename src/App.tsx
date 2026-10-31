@@ -406,7 +406,7 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
         {bulkBusy && <div className="bulk-progress"><div><b>Publishing videos</b><span>{bulkProgress.done} / {bulkProgress.total}</span></div><i><span style={{ width: bulkProgress.total ? (bulkProgress.done / bulkProgress.total * 100) + '%' : '0%' }} /></i></div>}
         <p className="microcopy bulk-generator-note">VYRA creates starter copy from each filename and video duration. It does not watch or understand the clip; edit the generated title and description to describe what happens in your video. No external AI service is used.</p>
         <label className="check-line"><input type="checkbox" checked={rights} disabled={bulkBusy} onChange={e => setRights(e.target.checked)} /> I own these videos or have permission to publish all selected content, including audio.</label>
-        {message && <div className={message.includes('published successfully') || message.includes('video(s) published') ? 'notice-success' : 'form-error'}>{message}</div>}
+        {message && <div className={message.includes('failed;') ? 'form-error' : message.includes('published successfully') || message.includes('video(s) published') ? 'notice-success' : 'form-error'}>{message}</div>}
         <button className="button button-primary button-wide" onClick={submitBulk} disabled={bulkBusy || busy || !rights || !pendingCount}>
           {bulkBusy ? 'Publishing ' + bulkProgress.done + ' / ' + bulkProgress.total + '…' : 'Publish ' + pendingCount + ' queued video(s)'}
           <span>↗</span>
