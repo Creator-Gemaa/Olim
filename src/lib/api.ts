@@ -9,7 +9,7 @@ export const supabase = createClient(url || 'https://example.supabase.co', key |
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 });
 const apiUrl = (url || '').replace(/\/$/, '') + '/functions/v1/api';
-const storageKey = 'fameloop_session_v1';
+const storageKey = 'vyra_session_v1';
 export function getSessionToken(): string | null { return sessionStorage.getItem(storageKey); }
 export function setSessionToken(value: string): void { sessionStorage.setItem(storageKey, value); }
 export function clearSessionToken(): void { sessionStorage.removeItem(storageKey); }
