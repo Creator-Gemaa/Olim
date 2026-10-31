@@ -395,21 +395,67 @@ Deno.serve(async (req: Request) => {
       }
       const conversations = rows.map((row: any) => {
         const otherId = row.user_a === userId ? row.user_b : row.user_a;
+        const latest = latestByConversation.get(row.id) || null;
         return {
           id: row.id, status: row.status, requester_id: row.requester_id,
           created_at: row.created_at, last_message_at: row.last_message_at,
           otherUser: safeUser(peopleById.get(otherId)),
-          last_message: latestByConversation.get(row.id) || null,
+          last_message: latest ? {
+            ...latest,
+            preview: latest.message_type === "image" ? "🔒 Encrypted photo"
+              : latest.message_type === "voice" ? "🔒 Voice note"
+              : latest.message_type === "shared_post" ? "Shared a post"
+              : "🔒 Encrypted message",
+          } : null,
         };
       }).filter((row: any) => row.otherUser);
       return response({ conversations }, 200, origin);
     }
 
+    if (action === "e2ee-key-get") {
+      const current = requireUser();
+      const username = String(body.username || current.profile.username).toLowerCase().trim();
+      const { data: target } = await db.from("profiles").select("id,username").eq("username", username).maybeSingle();
+      if (!target) return fail("Creator not found.", 404, origin);
+      const { data: keyRow, error } = await db.from("dm_e2ee_keys").select("*").eq("user_id", target.id).maybeSingle();
+      if (error) throw error;
+      if (!keyRow) return response({ key: null }, 200, origin);
+      const key: any = {
+        username: target.username, publicKey: keyRow.public_key, keyVersion: keyRow.key_version,
+      };
+      if (target.id === current.profile.id) {
+        key.wrappedPrivateKey = keyRow.wrapped_private_key;
+        key.salt = keyRow.salt;
+        key.iv = keyRow.iv;
+      }
+      return response({ key }, 200, origin);
+    }
+
+    if (action === "e2ee-key-set") {
+      const current = requireUser();
+      const publicKey = body.publicKey as Record<string, unknown> | undefined;
+      const wrappedPrivateKey = String(body.wrappedPrivateKey || "");
+      const salt = String(body.salt || "");
+      const iv = String(body.iv || "");
+      if (!publicKey || publicKey.kty !== "EC" || publicKey.crv !== "P-256"
+        || typeof publicKey.x !== "string" || typeof publicKey.y !== "string"
+        || String(publicKey.x).length > 256 || String(publicKey.y).length > 256
+        || wrappedPrivateKey.length < 40 || wrappedPrivateKey.length > 12000
+        || salt.length < 20 || salt.length > 128 || iv.length < 12 || iv.length > 64) {
+        return fail("Encrypted key data is invalid.", 422, origin);
+      }
+      const { error } = await db.from("dm_e2ee_keys").upsert({
+        user_id: current.profile.id, public_key: publicKey, wrapped_private_key: wrappedPrivateKey,
+        salt, iv, key_version: 1, updated_at: new Date().toISOString(),
+      }, { onConflict: "user_id" });
+      if (error) throw error;
+      return response({ ready: true, keyVersion: 1 }, 200, origin);
+    }
+
     if (action === "dm-start") {
       const current = requireUser();
       const username = String(body.username || "").toLowerCase().trim();
-      const content = String(body.content || "").trim().slice(0, 1000);
-      if (!username || !content) return fail("Choose a creator and write a message first.", 422, origin);
+      if (!username) return fail("Choose a creator first.", 422, origin);
       const { data: target } = await db.from("profiles").select("id,username").eq("username", username).maybeSingle();
       if (!target || target.id === current.profile.id) return fail("Creator not found.", 404, origin);
       const [userA, userB] = [current.profile.id, target.id].sort();
@@ -429,7 +475,7 @@ Deno.serve(async (req: Request) => {
           .insert({ user_a: userA, user_b: userB, requester_id: current.profile.id, status: "pending" })
           .select("*").single();
         if (createError && createError.code !== "23505") throw createError;
-        if (created) { conversation = created; }
+        if (created) conversation = created;
         else {
           const { data: raced, error: racedError } = await db.from("dm_conversations")
             .select("*").eq("user_a", userA).eq("user_b", userB).maybeSingle();
@@ -437,42 +483,53 @@ Deno.serve(async (req: Request) => {
           conversation = raced;
         }
       }
+      if (conversation.status === "pending") return response({
+        conversationId: conversation.id,
+        status: conversation.requester_id === current.profile.id ? "pending" : "incoming",
+      }, 200, origin);
+      if (conversation.status === "accepted") return response({ conversationId: conversation.id, status: "accepted" }, 200, origin);
 
-      if (conversation.status === "accepted") {
-        const { error } = await db.from("dm_messages").insert({
-          conversation_id: conversation.id, sender_id: current.profile.id, content,
-        });
-        if (error) throw error;
-        await db.from("notifications").insert({
-          user_id: target.id, actor_id: current.profile.id, type: "message",
-          message: "@" + current.profile.username + " sent you a message.",
-        });
-        return response({ conversationId: conversation.id, status: "accepted" }, 200, origin);
-      }
-
-      if (conversation.status === "pending") {
-        return response({
-          conversationId: conversation.id,
-          status: conversation.requester_id === current.profile.id ? "pending" : "incoming",
-        }, 200, origin);
-      }
-
-      // A declined request may be sent again after the daily anti-spam check above.
       const { data: reopened, error: reopenError } = await db.from("dm_conversations")
         .update({ requester_id: current.profile.id, status: "pending", accepted_at: null, created_at: new Date().toISOString() })
         .eq("id", conversation.id).select("*").single();
       if (reopenError) throw reopenError;
-      conversation = reopened;
-
-      const { error: messageError } = await db.from("dm_messages").insert({
-        conversation_id: conversation.id, sender_id: current.profile.id, content,
-      });
-      if (messageError) throw messageError;
       await db.from("notifications").insert({
         user_id: target.id, actor_id: current.profile.id, type: "message_request",
         message: "@" + current.profile.username + " sent you a message request.",
       });
-      return response({ conversationId: conversation.id, status: "pending" }, 201, origin);
+      return response({ conversationId: reopened.id, status: "pending" }, 201, origin);
+    }
+
+    if (action === "dm-request-send") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const content = String(body.content || "");
+      if (content.length < 20 || content.length > 6000 || !content.startsWith("vyra1.")) {
+        return fail("First contact must be end-to-end encrypted.", 422, origin);
+      }
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,requester_id,status")
+        .eq("id", conversationId).maybeSingle();
+      if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("Message request not found.", 404, origin);
+      }
+      if (conversation.status !== "pending" || conversation.requester_id !== current.profile.id) {
+        return fail("Only the request sender can add the first encrypted message.", 403, origin);
+      }
+      const { count } = await db.from("dm_messages")
+        .select("id", { count: "exact", head: true }).eq("conversation_id", conversationId);
+      if ((count || 0) > 0) return fail("This request already has its first message.", 409, origin);
+      const { data: message, error } = await db.from("dm_messages").insert({
+        conversation_id: conversationId, sender_id: current.profile.id, content,
+        message_type: "text", e2ee_version: 1,
+      }).select("id,conversation_id,sender_id,content,message_type,created_at").single();
+      if (error) throw error;
+      const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
+      await db.from("notifications").insert({
+        user_id: recipientId, actor_id: current.profile.id, type: "message_request",
+        message: "@" + current.profile.username + " sent you an encrypted message request.",
+      });
+      return response({ message }, 201, origin);
     }
 
     if (action === "dm-respond") {
@@ -511,33 +568,196 @@ Deno.serve(async (req: Request) => {
         return fail("Conversation not found.", 404, origin);
       }
       const { data: messages, error } = await db.from("dm_messages")
-        .select("id,conversation_id,sender_id,content,created_at")
+        .select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,shared_post_id,e2ee_version,created_at,shared_post:posts!dm_messages_shared_post_id_fkey(id,caption,media_path,media_type,kind,created_at,author:profiles!posts_user_id_fkey(*))")
         .eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(200);
       if (error) throw error;
-      return response({ messages: messages || [], status: conversation.status }, 200, origin);
+      return response({
+        messages: (messages || []).map((message: any) => ({
+          id: message.id, conversation_id: message.conversation_id, sender_id: message.sender_id,
+          content: message.content, message_type: message.message_type || "text",
+          media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
+          attachment_iv: message.attachment_iv, attachment_mime: message.attachment_mime,
+          e2ee_version: message.e2ee_version || 0, created_at: message.created_at,
+          shared_post: message.shared_post ? {
+            id: message.shared_post.id, caption: message.shared_post.caption,
+            media_url: publicMedia(message.shared_post.media_path), media_type: message.shared_post.media_type,
+            kind: message.shared_post.kind, author: safeUser(message.shared_post.author),
+          } : null,
+        }))
+      }, 200, origin);
+    }
+
+    if (action === "dm-attachment-upload") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const mime = String(body.mimeType || "");
+      const size = Number(body.size || 0);
+      const messageType = String(body.messageType || "");
+      const allowed = messageType === "image"
+        ? ["image/jpeg","image/png","image/webp"]
+        : messageType === "voice" ? ["audio/webm","audio/ogg","audio/mp4","audio/mpeg"] : [];
+      if (!allowed.includes(mime) || !Number.isFinite(size) || size < 1 || size > 15 * 1024 * 1024) {
+        return fail("This encrypted attachment type or size is not supported.", 422, origin);
+      }
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
+      if (!conversation || conversation.status !== "accepted"
+        || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("An accepted conversation is required to share attachments.", 403, origin);
+      }
+      const path = current.profile.id + "/dm/" + conversationId + "/" + crypto.randomUUID() + ".bin";
+      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      if (error || !data?.token) throw error || new Error("Could not create a secure upload URL.");
+      return response({ path, uploadToken: data.token }, 200, origin);
     }
 
     if (action === "dm-send") {
       const current = requireUser();
       const conversationId = String(body.conversationId || "");
-      const content = String(body.content || "").trim().slice(0, 1000);
-      if (!content) return fail("Write a message first.", 422, origin);
+      const content = String(body.content || "");
+      const messageType = String(body.messageType || "text");
+      const attachmentPath = String(body.attachmentPath || "");
+      const attachmentIv = String(body.attachmentIv || "");
+      const attachmentMime = String(body.attachmentMime || "");
+      if (!content.startsWith("vyra1.") || content.length > 6000) return fail("Only end-to-end encrypted messages can be sent.", 422, origin);
+      if (!["text","image","voice"].includes(messageType)) return fail("Unsupported message type.", 422, origin);
       const { data: conversation } = await db.from("dm_conversations")
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
       if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
         return fail("Conversation not found.", 404, origin);
       }
       if (conversation.status !== "accepted") return fail("This chat opens after the recipient accepts the request.", 403, origin);
-      const { data: message, error } = await db.from("dm_messages")
-        .insert({ conversation_id: conversationId, sender_id: current.profile.id, content })
-        .select("id,conversation_id,sender_id,content,created_at").single();
+      if (messageType === "text" && (attachmentPath || attachmentIv)) return fail("Text messages cannot contain attachment data.", 422, origin);
+      if (messageType !== "text") {
+        if (!attachmentPath.startsWith(current.profile.id + "/dm/" + conversationId + "/")
+          || !/^[A-Za-z0-9+/=]{12,64}$/.test(attachmentIv)
+          || !["image/jpeg","image/png","image/webp","audio/webm","audio/ogg","audio/mp4","audio/mpeg"].includes(attachmentMime)
+          || !(await storageFileExists(attachmentPath))) {
+          return fail("Encrypted attachment could not be verified.", 422, origin);
+        }
+      }
+      const { data: message, error } = await db.from("dm_messages").insert({
+        conversation_id: conversationId, sender_id: current.profile.id, content,
+        message_type: messageType, attachment_path: messageType === "text" ? null : attachmentPath,
+        attachment_iv: messageType === "text" ? null : attachmentIv,
+        attachment_mime: messageType === "text" ? null : attachmentMime,
+        e2ee_version: 1,
+      }).select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,e2ee_version,created_at").single();
       if (error) throw error;
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
       await db.from("notifications").insert({
         user_id: recipientId, actor_id: current.profile.id, type: "message",
-        message: "@" + current.profile.username + " sent you a message.",
+        message: "@" + current.profile.username + " sent you an end-to-end encrypted message.",
       });
-      return response({ message }, 201, origin);
+      return response({ message: { ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null } }, 201, origin);
+    }
+
+    if (action === "dm-share-post") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const postId = String(body.postId || "");
+      const content = String(body.content || "");
+      if (!content.startsWith("vyra1.") || content.length > 6000) return fail("Post shares must be end-to-end encrypted.", 422, origin);
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
+      if (!conversation || conversation.status !== "accepted"
+        || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) return fail("Accepted conversation not found.", 403, origin);
+      const { data: post } = await db.from("posts").select("id").eq("id", postId).eq("status","approved").maybeSingle();
+      if (!post) return fail("This post is no longer available to share.", 404, origin);
+      const { data: message, error } = await db.from("dm_messages").insert({
+        conversation_id: conversationId, sender_id: current.profile.id, content,
+        message_type: "shared_post", shared_post_id: postId, e2ee_version: 1,
+      }).select("id,conversation_id,sender_id,content,message_type,shared_post_id,e2ee_version,created_at").single();
+      if (error) throw error;
+      const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
+      await db.from("notifications").insert({ user_id:recipientId,actor_id:current.profile.id,type:"message",message:"@" + current.profile.username + " shared a post with you." });
+      return response({ message },201,origin);
+    }
+
+    if (action === "dm-call-start") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const callType = String(body.callType || "");
+      if (!["audio","video"].includes(callType)) return fail("Choose an audio or video call.",422,origin);
+      const { data: conversation } = await db.from("dm_conversations").select("id,user_a,user_b,status")
+        .eq("id",conversationId).maybeSingle();
+      if (!conversation || conversation.status !== "accepted"
+        || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) return fail("Accepted conversation not found.",403,origin);
+      const { data: existing } = await db.from("dm_call_sessions").select("id")
+        .eq("conversation_id",conversationId).in("status",["ringing","active"]).gte("created_at",new Date(Date.now()-5*60*1000).toISOString()).limit(1);
+      if (existing?.length) return fail("A call is already active in this chat.",409,origin);
+      const calleeId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
+      const { data: call, error } = await db.from("dm_call_sessions").insert({
+        conversation_id:conversationId,caller_id:current.profile.id,callee_id:calleeId,call_type:callType,status:"ringing",
+      }).select("*").single();
+      if (error) throw error;
+      return response({ call },201,origin);
+    }
+
+    if (action === "dm-call-poll") {
+      const current = requireUser();
+      const { data: calls, error } = await db.from("dm_call_sessions").select("*")
+        .or("caller_id.eq." + current.profile.id + ",callee_id.eq." + current.profile.id)
+        .in("status",["ringing","active"]).gte("created_at",new Date(Date.now()-3*60*1000).toISOString())
+        .order("created_at",{ascending:false}).limit(1);
+      if (error) throw error;
+      return response({ call: calls?.[0] || null },200,origin);
+    }
+
+    if (action === "dm-call-accept") {
+      const current = requireUser();
+      const callId = String(body.callId || "");
+      const { data: call } = await db.from("dm_call_sessions").select("*").eq("id",callId).maybeSingle();
+      if (!call || call.callee_id !== current.profile.id || call.status !== "ringing") return fail("Incoming call not found.",404,origin);
+      const { data, error } = await db.from("dm_call_sessions").update({status:"active",accepted_at:new Date().toISOString()})
+        .eq("id",callId).eq("status","ringing").select("*").single();
+      if (error) throw error;
+      return response({call:data},200,origin);
+    }
+
+    if (action === "dm-call-signal") {
+      const current = requireUser();
+      const callId = String(body.callId || "");
+      const signalType = String(body.signalType || "");
+      const payload = body.payload;
+      if (!["offer","answer","ice"].includes(signalType) || !payload || typeof payload !== "object"
+        || JSON.stringify(payload).length > 40000) return fail("Call signal is invalid.",422,origin);
+      const { data: call } = await db.from("dm_call_sessions").select("id,caller_id,callee_id,status")
+        .eq("id",callId).maybeSingle();
+      if (!call || (call.caller_id !== current.profile.id && call.callee_id !== current.profile.id)
+        || !["ringing","active"].includes(call.status)) return fail("Call session is not active.",403,origin);
+      const { data: signal, error } = await db.from("dm_call_signals").insert({
+        call_id:callId,sender_id:current.profile.id,signal_type:signalType,payload,
+      }).select("id").single();
+      if (error) throw error;
+      return response({id:signal.id},201,origin);
+    }
+
+    if (action === "dm-call-signals") {
+      const current = requireUser();
+      const callId = String(body.callId || "");
+      const afterId = Number(body.afterId || 0);
+      const { data: call } = await db.from("dm_call_sessions").select("id,caller_id,callee_id,status")
+        .eq("id",callId).maybeSingle();
+      if (!call || (call.caller_id !== current.profile.id && call.callee_id !== current.profile.id)) return fail("Call session not found.",404,origin);
+      const { data, error } = await db.from("dm_call_signals").select("id,sender_id,signal_type,payload,created_at")
+        .eq("call_id",callId).neq("sender_id",current.profile.id).gt("id",afterId).order("id",{ascending:true}).limit(100);
+      if (error) throw error;
+      return response({signals:data || [],status:call.status},200,origin);
+    }
+
+    if (action === "dm-call-end") {
+      const current = requireUser();
+      const callId = String(body.callId || "");
+      const decision = String(body.decision || "end");
+      const { data: call } = await db.from("dm_call_sessions").select("id,caller_id,callee_id,status")
+        .eq("id",callId).maybeSingle();
+      if (!call || (call.caller_id !== current.profile.id && call.callee_id !== current.profile.id)) return fail("Call session not found.",404,origin);
+      const status = decision === "decline" && call.callee_id === current.profile.id ? "declined" :
+        decision === "missed" ? "missed" : "ended";
+      const { error } = await db.from("dm_call_sessions").update({status,ended_at:new Date().toISOString()}).eq("id",callId);
+      if (error) throw error;
+      return response({status},200,origin);
     }
 
     if (action === "record-view") {
