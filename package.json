@@ -1,7 +1,7 @@
 {
   "name": "vyra-social",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -20,7 +20,8 @@
     "react": "19.1.1",
     "react-dom": "19.1.1",
     "@capacitor/android": "8.6.0",
-    "@capacitor/core": "8.6.0"
+    "@capacitor/core": "8.6.0",
+    "electron-updater": "6.8.11"
   },
   "devDependencies": {
     "@types/react": "19.1.16",
@@ -69,6 +70,14 @@
       "createStartMenuShortcut": true,
       "shortcutName": "VYRA"
     },
-    "artifactName": "VYRA-Setup.${ext}"
+    "artifactName": "VYRA-Setup.${ext}",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Creator-Gemaa",
+        "repo": "Olim",
+        "releaseType": "release"
+      }
+    ]
   }
 }
