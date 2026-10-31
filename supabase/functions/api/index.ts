@@ -415,6 +415,8 @@ Deno.serve(async (req: Request) => {
       const current = await requireAdmin();
       const { data: pending } = await db.from("posts").select("*,author:profiles!posts_user_id_fkey(*)")
         .eq("status", "pending").order("created_at", { ascending: true }).limit(80);
+      const { data: pendingStories } = await db.from("stories").select("*,author:profiles!stories_user_id_fkey(*)")
+        .eq("status", "pending").order("created_at", { ascending: true }).limit(80);
       const { count: users } = await db.from("profiles").select("id", { count: "exact", head: true });
       const { count: verified } = await db.from("profiles").select("id", { count: "exact", head: true }).eq("is_verified", true);
       return response({
@@ -423,6 +425,11 @@ Deno.serve(async (req: Request) => {
           id: post.id, caption: post.caption, media_type: post.media_type, kind: post.kind,
           media_url: publicMedia(post.media_path), copyright_status: post.copyright_status,
           author: safeUser(post.author),
+        })),
+        pendingStories: (pendingStories || []).map((story: any) => ({
+          id: story.id, caption: story.caption, media_type: story.media_type,
+          media_url: publicMedia(story.media_path), copyright_status: story.copyright_status,
+          author: safeUser(story.author),
         })),
         admin: safeUser(current.profile),
       }, 200, origin);
@@ -455,6 +462,28 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       await audit(current.profile.id, "moderate_post_" + decision, postId);
       if (decision === "approve") await db.from("notifications").insert({ user_id: post.user_id, actor_id: current.profile.id, type: "post_approved", post_id: postId, message: "Your post has been approved and is now eligible for the feed." });
+      return response({ ok: true }, 200, origin);
+    }
+    if (action === "admin-moderate-story") {
+      const current = await requireAdmin();
+      const storyId = String(body.storyId || "");
+      const decision = String(body.decision || "");
+      if (!["approve", "block"].includes(decision)) return fail("Choose approve or block.", 422, origin);
+      const { data: story } = await db.from("stories").select("id,user_id,sha256").eq("id", storyId).maybeSingle();
+      if (!story) return fail("Story not found.", 404, origin);
+      const match = await exactCopyrightMatch(story.sha256);
+      if (match && decision === "approve") return fail("An exact copyright registry match exists. This story cannot be approved.", 409, origin);
+      const { error } = await db.from("stories").update({
+        status: decision === "approve" ? "approved" : "blocked",
+        copyright_status: decision === "approve" ? "no_exact_match" : (match ? "matched" : "pending_manual_review"),
+        reviewed_at: new Date().toISOString(), reviewed_by: current.profile.id,
+      }).eq("id", storyId);
+      if (error) throw error;
+      await audit(current.profile.id, "moderate_story_" + decision, storyId);
+      if (decision === "approve") await db.from("notifications").insert({
+        user_id: story.user_id, actor_id: current.profile.id, type: "story_approved",
+        message: "Your story has been approved and is now visible for 24 hours.",
+      });
       return response({ ok: true }, 200, origin);
     }
     if (action === "admin-feature") {
