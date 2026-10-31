@@ -79,10 +79,16 @@ jobs:
           $installer = Get-ChildItem release -Filter *.exe | Select-Object -First 1
           if (-not $installer) { throw "electron-builder did not create an EXE installer" }
           if ($installer.Name -ne "VYRA-Setup.exe") { Copy-Item $installer.FullName "release/VYRA-Setup.exe" -Force }
+          if (-not (Test-Path "release/latest.yml")) { throw "electron-builder did not create latest.yml; Windows auto-update cannot work" }
+          $blockmap = "release/VYRA-Setup.exe.blockmap"
+          if (-not (Test-Path $blockmap)) { throw "electron-builder did not create the Windows installer blockmap" }
       - uses: actions/upload-artifact@v4
         with:
           name: vyra-windows
-          path: release/VYRA-Setup.exe
+          path: |
+            release/VYRA-Setup.exe
+            release/VYRA-Setup.exe.blockmap
+            release/latest.yml
           if-no-files-found: error
           retention-days: 14
 
@@ -110,6 +116,8 @@ jobs:
           files: |
             release/VYRA-Android.apk
             release/VYRA-Setup.exe
+            release/VYRA-Setup.exe.blockmap
+            release/latest.yml
           overwrite_files: true
           fail_on_unmatched_files: true
           make_latest: true
