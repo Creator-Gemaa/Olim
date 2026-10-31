@@ -358,7 +358,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
     finally { setBusy(false); }
   }
 
-  async function sendMessage(event: React.FormEvent) {
+  async function sendMessage(event: FormEvent) {
     event.preventDefault();
     if (!selectedId || !composer.trim()) return;
     setBusy(true);
