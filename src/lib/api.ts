@@ -28,6 +28,26 @@ export async function callApi<T = any>(action: string, payload: Record<string, u
   return body as T;
 }
 
+export async function uploadEncryptedAttachment(
+  blob: Blob,
+  conversationId: string,
+  token: string,
+  messageType: "image" | "voice",
+  originalMime: string,
+) {
+  const signed = await callApi<{ path: string; uploadToken: string }>("dm-attachment-upload", {
+    conversationId, messageType, mimeType: originalMime, size: blob.size,
+  }, token);
+  const { error } = await supabase.storage.from("media").uploadToSignedUrl(
+    signed.path,
+    signed.uploadToken,
+    blob,
+    { contentType: "application/octet-stream", upsert: false },
+  );
+  if (error) throw new Error(error.message);
+  return signed.path;
+}
+
 export async function uploadMedia(
   file: File,
   purpose: 'post' | 'story' | 'avatar' | 'audio',
