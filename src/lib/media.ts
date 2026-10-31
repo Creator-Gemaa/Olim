@@ -10,7 +10,7 @@ export function acceptedMediaType(type: string): boolean {
 export function maxBytesFor(type: string): number {
   if (type.startsWith('image/')) return 12 * 1024 * 1024;
   if (type.startsWith('audio/')) return 25 * 1024 * 1024;
-  if (type.startsWith('video/')) return 100 * 1024 * 1024;
+  if (type.startsWith('video/')) return 50 * 1024 * 1024;
   return 0;
 }
 export async function sha256(file: File): Promise<string> {
