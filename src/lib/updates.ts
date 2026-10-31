@@ -3,9 +3,6 @@ export const APP_VERSION = '1.0.6';
 export const UPDATE_MANIFEST_URL =
   'https://raw.githubusercontent.com/Creator-Gemaa/Olim/vyra-latest/public/version.json';
 
-const RELEASE_ASSET_PREFIX =
-  'https://github.com/Creator-Gemaa/Olim/releases/download/vyra-latest/';
-
 export type UpdateCheckResult = {
   currentVersion: string;
   latestVersion: string;
