@@ -51,6 +51,17 @@ async function passwordHash(password: string, salt: Uint8Array, iterations = 310
   const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt, iterations, hash: "SHA-256" }, key, 256);
   return b64(new Uint8Array(bits));
 }
+async function encryptCredentials(value: string) {
+  const rawKey = Deno.env.get("PAYMENT_ENCRYPTION_KEY") || "";
+  if (!rawKey) throw new Error("Payment credential encryption is not configured.");
+  let keyBytes: Uint8Array;
+  try { keyBytes = fromB64(rawKey.trim()); } catch { throw new Error("PAYMENT_ENCRYPTION_KEY must be base64 for a 32-byte AES key."); }
+  if (keyBytes.length !== 32) throw new Error("PAYMENT_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(value));
+  return "v1." + b64(iv) + "." + b64(new Uint8Array(cipher));
+}
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -381,15 +392,54 @@ Deno.serve(async (req: Request) => {
         const duration = Number(body.durationSeconds || 0);
         if (!Number.isFinite(duration) || duration < 0 || duration > 3600) return fail("Video duration is invalid.", 422, origin);
         const kind = family === "image" ? "photo" : (duration <= 120 ? "reel" : "video");
+        const audioTrackId = String(body.audioTrackId || "");
+        if (audioTrackId) {
+          const { data: ownedTrack } = await db.from("audio_tracks").select("id")
+            .eq("id", audioTrackId).eq("user_id", current.profile.id).maybeSingle();
+          if (!ownedTrack) return fail("Choose an audio track from your own library.", 403, origin);
+        }
         const { data, error } = await db.from("posts").insert({
           user_id: current.profile.id, caption: String(body.caption || "").slice(0, 2200), media_path: path,
-          media_type: family, kind, duration_seconds: duration, sha256: hash, status: "pending",
-          copyright_status: "pending_manual_review",
+          media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
+          sha256: hash, status: "pending", copyright_status: "pending_manual_review",
         }).select("id,kind,status").single();
         if (error) throw error;
         return response({ id: data.id, kind: data.kind, status: data.status }, 201, origin);
       }
       return fail("Unknown upload purpose.", 422, origin);
+    }
+    if (action === "connect-payment") {
+      const current = requireUser();
+      const provider = String(body.provider || "");
+      if (!["razorpay", "stripe"].includes(provider)) return fail("Choose Razorpay or Stripe.", 422, origin);
+      let credentials: Record<string, string>;
+      if (provider === "stripe") {
+        const secretKey = String(body.secretKey || "").trim();
+        if (!/^sk_(test|live)_[A-Za-z0-9_]{12,}$/.test(secretKey)) return fail("Enter a valid Stripe secret key (test or live).", 422, origin);
+        credentials = { secretKey };
+      } else {
+        const keyId = String(body.keyId || "").trim();
+        const keySecret = String(body.keySecret || "").trim();
+        if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
+          return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
+        }
+        credentials = { keyId, keySecret };
+      }
+      const encrypted = await encryptCredentials(JSON.stringify(credentials));
+      const { error } = await db.from("creator_payment_connections").upsert({
+        creator_id: current.profile.id, provider, encrypted_credentials: encrypted,
+        connected_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      }, { onConflict: "creator_id" });
+      if (error) throw error;
+      await audit(current.profile.id, "connect_creator_payment_provider", current.profile.id, { provider });
+      return response({ ok: true, provider }, 200, origin);
+    }
+    if (action === "payment-status") {
+      const current = requireUser();
+      const { data, error } = await db.from("creator_payment_connections")
+        .select("provider,connected_at,updated_at").eq("creator_id", current.profile.id).maybeSingle();
+      if (error) throw error;
+      return response({ connection: data || null }, 200, origin);
     }
     if (action === "list-audio") {
       const current = requireUser();
@@ -417,6 +467,8 @@ Deno.serve(async (req: Request) => {
         .eq("status", "pending").order("created_at", { ascending: true }).limit(80);
       const { data: pendingStories } = await db.from("stories").select("*,author:profiles!stories_user_id_fkey(*)")
         .eq("status", "pending").order("created_at", { ascending: true }).limit(80);
+      const { data: approvedRows } = await db.from("posts").select("*,author:profiles!posts_user_id_fkey(*)")
+        .eq("status", "approved").order("created_at", { ascending: false }).limit(40);
       const { count: users } = await db.from("profiles").select("id", { count: "exact", head: true });
       const { count: verified } = await db.from("profiles").select("id", { count: "exact", head: true }).eq("is_verified", true);
       return response({
@@ -430,6 +482,11 @@ Deno.serve(async (req: Request) => {
           id: story.id, caption: story.caption, media_type: story.media_type,
           media_url: publicMedia(story.media_path), copyright_status: story.copyright_status,
           author: safeUser(story.author),
+        })),
+        approvedPosts: (approvedRows || []).map((post: any) => ({
+          id: post.id, caption: post.caption, media_type: post.media_type, kind: post.kind,
+          media_url: publicMedia(post.media_path), is_world_featured: !!post.is_world_featured,
+          author: safeUser(post.author),
         })),
         admin: safeUser(current.profile),
       }, 200, origin);
