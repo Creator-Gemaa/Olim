@@ -10,7 +10,7 @@ import { classifyVideo, videoDuration } from './lib/media';
 import { uploadEncryptedAttachment } from './lib/api';
 import {
   createE2EEIdentity, unlockE2EEIdentity, deriveConversationKey, encryptText, decryptText,
-  encryptFile, decryptFile, type E2EEIdentity, type StoredE2EEIdentity,
+  encryptFile, decryptFile, conversationSafetyCode, type E2EEIdentity, type StoredE2EEIdentity,
 } from './lib/e2ee';
 
 type User = {
@@ -596,6 +596,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const [keyError, setKeyError] = useState('');
   const [decoded, setDecoded] = useState<Record<string, string>>({});
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  const [safetyCode, setSafetyCode] = useState('');
+  const [showSafetyCode, setShowSafetyCode] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
@@ -659,6 +661,24 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   }, [messages, selectedId]);
 
   const selected = conversations.find(item => item.id === selectedId) || null;
+  const selectedPeerUsername = selected?.otherUser.username || '';
+  const selectedAccepted = selected?.status === 'accepted';
+  useEffect(() => {
+    let active = true;
+    setShowSafetyCode(false);
+    if (!identity || !selectedId || !selectedPeerUsername || !selectedAccepted) {
+      setSafetyCode('');
+      return () => { active = false; };
+    }
+    callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: selectedPeerUsername }, token)
+      .then(async result => {
+        if (!result.key?.publicKey) throw new Error('The other creator has not enabled secure messaging.');
+        const code = await conversationSafetyCode(identity.publicKey, result.key.publicKey, selectedId);
+        if (active) setSafetyCode(code);
+      })
+      .catch(() => { if (active) setSafetyCode('Unavailable'); });
+    return () => { active = false; };
+  }, [identity, selectedId, selectedPeerUsername, selectedAccepted, token]);
   const incoming = conversations.filter(item => item.status === 'pending' && item.requester_id !== user.id);
   const sent = conversations.filter(item => item.status === 'pending' && item.requester_id === user.id);
   const chats = conversations.filter(item => item.status === 'accepted');
@@ -932,7 +952,14 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
             {selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
           </div>
           {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
-          <div className="dm-encryption-note"><LockKeyhole size={12} /> New message content and attachments are encrypted end-to-end.</div>
+          <button type="button" className="dm-encryption-note dm-safety-toggle" onClick={() => setShowSafetyCode(value => !value)}>
+            <LockKeyhole size={12} /> End-to-end encrypted · {showSafetyCode ? 'Hide' : 'Compare safety code'}
+          </button>
+          {showSafetyCode && <div className="dm-safety-code">
+            <small>Conversation safety code</small>
+            <strong>{safetyCode || 'Generating…'}</strong>
+            <p>Ask @{selected.otherUser.username} to open this same panel on their device and compare all groups using another trusted channel. A mismatch means you should not send sensitive information.</p>
+          </div>}
           <div className="dm-messages" ref={messagesRef}>
             {messages.map(message => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '')}>
               <div className="dm-bubble">
