@@ -922,7 +922,7 @@ Deno.serve(async (req: Request) => {
         }
         const { data, error } = await db.from("posts").insert({
           user_id: current.profile.id,
-          title: String(body.title || (family === "video" ? "Video Moment" : "")).trim().slice(0, 160),
+          title: String(body.title || "").trim().slice(0, 160),
           caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
           sha256: hash,
