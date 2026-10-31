@@ -1,4 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { Browser } from '@capacitor/browser';
+import { Capacitor } from '@capacitor/core';
+import { APP_VERSION, checkLatestUpdate } from './lib/updates';
 import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
@@ -35,6 +38,15 @@ type DMConversation = {
   id: string; status: 'pending' | 'accepted' | 'declined'; requester_id: string;
   created_at: string; last_message_at: string; otherUser: User;
   last_message: { content: string; sender_id: string; created_at: string; preview?: string } | null;
+};
+type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'ready' | 'error';
+type UpdateUiState = {
+  phase: UpdatePhase;
+  message: string;
+  latestVersion?: string;
+  progress?: number;
+  downloadUrl?: string;
+  releaseUrl?: string;
 };
 
 const ago = (v: string) => {
@@ -1401,7 +1413,10 @@ function RightRail({ user, onCreate, onOpenProfile, onFollow, followingMap }: {
     <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 VYRA</p></div></aside>;
 }
 
-function SettingsPage({ token, user, onLogout }: { token: string; user: User; onLogout: () => void }) {
+function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate }: {
+  token: string; user: User; onLogout: () => void; update: UpdateUiState;
+  onCheckUpdates: () => void; onDownloadUpdate: () => void; onInstallUpdate: () => void;
+}) {
   const [tracks, setTracks] = useState<any[]>([]);
   const [title, setTitle] = useState('');
   const [artist, setArtist] = useState('');
@@ -1438,6 +1453,15 @@ function SettingsPage({ token, user, onLogout }: { token: string; user: User; on
     finally { setBusy(false); }
   }
   return <div className="content-page settings-page"><div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings & creator tools.</h2><p>Manage your identity, audio library and account session.</p></div>
+    <div className="settings-card update-settings-card"><div className="settings-card-head"><RefreshCw /><div><h3>VYRA updates</h3><p>Find the newest release for this device whenever you check.</p></div></div>
+      <div className="update-status-row" aria-live="polite"><span className={'update-state-dot update-state-' + update.phase} /><div className="update-status-copy"><b>Installed version v{APP_VERSION}</b><p>{update.message}</p>{update.latestVersion && <small>Latest published version v{update.latestVersion}</small>}</div></div>
+      {update.phase === 'downloading' && update.progress !== undefined && <div className="update-progress" aria-label={'Download progress ' + Math.round(update.progress) + '%'}><span style={{ width: Math.max(0, Math.min(100, update.progress)) + '%' }} /></div>}
+      <div className="update-actions"><button className="button button-primary" onClick={onCheckUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}><RefreshCw size={15} /> {update.phase === 'checking' ? 'Checking…' : 'Update'}</button>
+        {update.phase === 'available' && <button className="button button-soft" onClick={onDownloadUpdate}>{Capacitor.getPlatform() === 'android' ? 'Download APK' : 'Open release downloads'}</button>}
+        {update.phase === 'ready' && window.vyraDesktop && <button className="button button-primary" onClick={onInstallUpdate}>Restart & install</button>}
+      </div>
+      <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Existing preview installs may require a one-time reinstall.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
+    </div>
     <div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
       <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
         <label className="audio-file">AUDIO FILE<input type="file" accept="audio/mpeg,audio/mp4" onChange={e => setAudioFile(e.target.files?.[0] || null)} /></label><label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I have the rights required to upload and use this audio.</label>
@@ -1480,6 +1504,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState('');
   const [updateReady, setUpdateReady] = useState(false);
+  const [updateState, setUpdateState] = useState<UpdateUiState>({ phase: 'idle', message: 'Tap Update to check for the newest VYRA release.' });
   const [mobileNav, setMobileNav] = useState(false);
   const pendingLikesRef = useRef(new Set<string>());
   const pendingFollowsRef = useRef(new Set<string>());
@@ -1490,6 +1515,42 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [darkTheme, setDarkTheme] = useState(() => {
     try { return localStorage.getItem('vyra-dark-theme') !== 'false'; } catch { return true; }
   });
+  const checkUpdates = useCallback(async () => {
+    if (updateState.phase === 'checking' || updateState.phase === 'downloading') return;
+    setUpdateState({ phase: 'checking', message: 'Checking the latest published VYRA release…' });
+    try {
+      const result = await checkLatestUpdate();
+      if (!result.available) {
+        setUpdateState({ phase: 'latest', latestVersion: result.latestVersion, message: `You’re already using the latest version of VYRA.` });
+        return;
+      }
+      if (window.vyraDesktop) {
+        setUpdateState({ phase: 'checking', latestVersion: result.latestVersion, releaseUrl: result.releaseUrl, message: `VYRA v${result.latestVersion} is available. Checking the Windows installer…` });
+        window.vyraDesktop.checkForUpdates();
+      } else {
+        const isAndroid = Capacitor.getPlatform() === 'android';
+        setUpdateState({
+          phase: 'available', latestVersion: result.latestVersion,
+          downloadUrl: isAndroid ? result.androidDownloadUrl : result.windowsDownloadUrl,
+          releaseUrl: result.releaseUrl,
+          message: `VYRA v${result.latestVersion} is available.`,
+        });
+      }
+    } catch (error) {
+      setUpdateState({ phase: 'error', message: error instanceof Error ? error.message : 'Could not check for updates. Please try again.' });
+    }
+  }, [updateState.phase]);
+  const downloadUpdate = useCallback(async () => {
+    const target = updateState.downloadUrl || updateState.releaseUrl;
+    if (!target) return;
+    try {
+      if (Capacitor.getPlatform() !== 'web' && updateState.downloadUrl) await Browser.open({ url: updateState.downloadUrl });
+      else window.open(updateState.releaseUrl || target, '_blank', 'noopener,noreferrer');
+    } catch (error) {
+      setUpdateState(current => ({ ...current, phase: 'error', message: error instanceof Error ? error.message : 'Could not open the update download.' }));
+    }
+  }, [updateState.downloadUrl, updateState.releaseUrl]);
+  const installUpdate = useCallback(() => { window.vyraDesktop?.installUpdate(); }, []);
   useEffect(() => {
     try { localStorage.setItem('vyra-sound-enabled', String(soundEnabled)); } catch { /* Storage may be unavailable. */ }
     const root = document.querySelector('.app-shell');
@@ -1517,12 +1578,37 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
   useEffect(() => {
-    const update = () => setUpdateReady(true);
+    const update = () => {
+      setUpdateReady(true);
+      setUpdateState(current => ({ ...current, phase: 'ready', message: `VYRA v${current.latestVersion || 'update'} is downloaded and ready to install.` }));
+    };
+    const desktopStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{ status?: string; version?: string; percent?: number; message?: string }>).detail;
+      if (!detail?.status) return;
+      const allowed: UpdatePhase[] = ['checking', 'latest', 'available', 'downloading', 'ready', 'error'];
+      const phase = allowed.includes(detail.status as UpdatePhase) ? detail.status as UpdatePhase : 'error';
+      setUpdateState(current => ({
+        ...current,
+        phase,
+        latestVersion: detail.version || current.latestVersion,
+        progress: detail.percent ?? current.progress,
+        message: detail.message || (phase === 'checking' ? 'Checking for a Windows update…' : phase === 'available' ? `VYRA v${detail.version || current.latestVersion || ''} was found. Downloading…` : phase === 'latest' ? 'You’re already using the latest version of VYRA.' : phase === 'downloading' ? `Downloading VYRA update${detail.percent === undefined ? '…' : ` · ${Math.round(detail.percent)}%`}` : phase === 'ready' ? 'The update is downloaded and ready to install.' : 'Could not complete the update check.'),
+      }));
+      if (phase === 'ready') setUpdateReady(true);
+    };
+    const desktopError = (event: Event) => {
+      const message = (event as CustomEvent<string>).detail;
+      setUpdateState(current => ({ ...current, phase: 'error', message: message || 'The Windows updater encountered an error.' }));
+    };
     window.addEventListener('vyra:update-ready', update);
     window.addEventListener('vyra:desktop-update-ready', update);
+    window.addEventListener('vyra:desktop-update-status', desktopStatus);
+    window.addEventListener('vyra:desktop-update-error', desktopError);
     return () => {
       window.removeEventListener('vyra:update-ready', update);
       window.removeEventListener('vyra:desktop-update-ready', update);
+      window.removeEventListener('vyra:desktop-update-status', desktopStatus);
+      window.removeEventListener('vyra:desktop-update-error', desktopError);
     };
   }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
@@ -1640,16 +1726,15 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className={'button ' + ((followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'button-soft following-button' : 'button-primary')} onClick={() => follow(viewProfile)}>{(followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'Following' : 'Follow @' + viewProfile.username}</button></div>}</div>}
   {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onIdentityReady={setE2eeIdentity} onStartCall={setCallInfo} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
-  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
+  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
-  <footer className="app-footer"><span>VYRA © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
+  <footer className="app-footer"><span>VYRA © 2026</span><span>BUILT BY GEMAA ✦</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} identity={e2eeIdentity} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <VYRAPlayer src={storyOpen.media_url} soundEnabled={soundEnabled} onToggleSound={toggleSound} autoPlay className="story-video-player" /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
   {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => {
-    if ((window as any).vyraDesktop?.installUpdate) (window as any).vyraDesktop.installUpdate();
-    else window.dispatchEvent(new Event('vyra:apply-update'));
+    installUpdate();
   }}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
   {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
   </div>;
