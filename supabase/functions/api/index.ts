@@ -434,6 +434,7 @@ Deno.serve(async (req: Request) => {
     }
     if (action === "connect-payment") {
       const current = requireUser();
+      if (!current.profile.is_verified) return fail("Only verified creators can connect a payment provider.", 403, origin);
       const provider = String(body.provider || "");
       if (!["razorpay", "stripe"].includes(provider)) return fail("Choose Razorpay or Stripe.", 422, origin);
       let credentials: Record<string, string>;
@@ -492,7 +493,7 @@ Deno.serve(async (req: Request) => {
       const { data: pendingStories } = await db.from("stories").select("*,author:profiles!stories_user_id_fkey(*)")
         .eq("status", "pending").order("created_at", { ascending: true }).limit(80);
       const { data: approvedRows } = await db.from("posts").select("*,author:profiles!posts_user_id_fkey(*)")
-        .eq("status", "approved").order("created_at", { ascending: false }).limit(40);
+        .eq("status", "approved").eq("media_type", "video").order("created_at", { ascending: false }).limit(40);
       const { count: users } = await db.from("profiles").select("id", { count: "exact", head: true });
       const { count: verified } = await db.from("profiles").select("id", { count: "exact", head: true }).eq("is_verified", true);
       return response({
@@ -571,8 +572,8 @@ Deno.serve(async (req: Request) => {
       const current = await requireAdmin();
       const postId = String(body.postId || "");
       const featured = body.featured === true;
-      const { data: post } = await db.from("posts").select("id,status").eq("id", postId).maybeSingle();
-      if (!post || post.status !== "approved") return fail("Only approved posts can appear in the world feed.", 409, origin);
+      const { data: post } = await db.from("posts").select("id,status,media_type").eq("id", postId).maybeSingle();
+      if (!post || post.status !== "approved" || post.media_type !== "video") return fail("Only approved videos can appear in the world feed.", 409, origin);
       const { error } = await db.from("posts").update({ is_world_featured: featured }).eq("id", postId);
       if (error) throw error;
       await audit(current.profile.id, "feature_world_post", postId, { featured });
