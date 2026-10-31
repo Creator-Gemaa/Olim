@@ -1,0 +1,346 @@
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import {
+  Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
+  Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
+  Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap,
+} from 'lucide-react';
+import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
+import { classifyVideo, videoDuration } from './lib/media';
+
+type User = {
+  id: string; username: string; display_name: string; bio: string; avatar_url?: string | null;
+  is_verified: boolean; follower_count: number; following_count: number; posts_count: number; is_admin?: boolean;
+};
+type Post = {
+  id: string; caption: string; media_url: string; media_type: 'image' | 'video';
+  kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
+  comments_count: number; created_at: string; author: User; liked: boolean; is_world_featured?: boolean;
+};
+type Story = { id: string; media_url: string; media_type: 'image' | 'video'; caption: string; author: User; created_at: string };
+type Tab = 'home' | 'reels' | 'explore' | 'profile' | 'notifications' | 'settings' | 'admin';
+
+const ago = (v: string) => {
+  const s = Math.max(0, Math.floor((Date.now() - new Date(v).getTime()) / 1000));
+  return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + 'm ago' : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
+};
+const initial = (value: string) => value.trim().slice(0, 1).toUpperCase() || 'F';
+
+function Avatar({ user, size = 'md', ring = false }: { user?: Partial<User> | null; size?: 'sm' | 'md' | 'lg' | 'xl'; ring?: boolean }) {
+  return <div className={'avatar avatar-' + size + (ring ? ' avatar-ring' : '')}>
+    {user?.avatar_url ? <img src={user.avatar_url} alt={user.display_name || user.username || 'Profile'} /> : <span>{initial(user?.display_name || user?.username || 'FameLoop')}</span>}
+  </div>;
+}
+
+function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
+  const [mode, setMode] = useState<'signup' | 'login'>('signup');
+  const [step, setStep] = useState(1);
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirm, setConfirm] = useState('');
+  const [heard, setHeard] = useState('Google');
+  const [birth, setBirth] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const switchMode = (next: 'signup' | 'login') => { setMode(next); setStep(1); setError(''); };
+  async function submit() {
+    setError('');
+    if (mode === 'signup' && step === 1) {
+      if (password !== confirm) return setError('Your passwords do not match.');
+      if (username.trim().length < 3) return setError('Choose a username with at least 3 characters.');
+      if (password.length < 10) return setError('Use at least 10 characters for your password.');
+      setStep(2); return;
+    }
+    if (mode === 'signup' && step === 2) { setStep(3); return; }
+    if (mode === 'signup' && !birth) return setError('Choose your birth date to continue.');
+    setBusy(true);
+    try {
+      const result = await callApi<{ user: User; token: string }>(mode === 'signup' ? 'signup' : 'login', {
+        username: username.trim().toLowerCase(), password, confirmPassword: confirm, heardAbout: heard, birthDate: birth,
+      }, null);
+      setSessionToken(result.token); onAuth(result.user, result.token);
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not sign in.'); }
+    finally { setBusy(false); }
+  }
+  return <main className="auth-shell">
+    <section className="auth-art"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" />
+      <div className="auth-art-copy"><div className="brand brand-light"><span className="brand-mark"><Sparkles size={19} /></span> fameloop</div>
+        <p className="eyebrow">YOUR STAGE IS WAITING</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
+        <p className="auth-subtitle">A place where creators become the story. Not the balance in your bank account.</p>
+        <div className="auth-mantra"><span>✦</span> Real fame. Real people. Your moment.</div>
+      </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>01 — 04</span></div>
+    </section>
+    <section className="auth-panel"><div className="auth-panel-inner">
+      <div className="mobile-brand brand"><span className="brand-mark"><Sparkles size={19} /></span> fameloop</div>
+      <div className="auth-head"><div className="step-kicker">{mode === 'signup' ? 'YOUR JOURNEY STARTS HERE' : 'WELCOME BACK'}</div>
+        <h2>{mode === 'login' ? 'Good to see you.' : step === 1 ? 'Create your account.' : step === 2 ? 'One quick question.' : 'When is your birthday?'}</h2>
+        <p>{mode === 'login' ? 'Pick up where your creativity left off.' : step === 1 ? 'Claim your corner of the internet.' : step === 2 ? 'How did FameLoop find its way to you?' : 'We use this to personalize your experience.'}</p>
+      </div>
+      {mode === 'signup' && <div className="step-progress"><span className="active" /><span className={step >= 2 ? 'active' : ''} /><span className={step >= 3 ? 'active' : ''} /></div>}
+      {mode === 'signup' && step === 1 && <div className="form-stack fade-in">
+        <label>USERNAME<input value={username} onChange={e => setUsername(e.target.value)} placeholder="yourcreativehandle" autoComplete="username" maxLength={24} /></label>
+        <label>PASSWORD<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 10 characters" autoComplete="new-password" /></label>
+        <label>CONFIRM PASSWORD<input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Type it one more time" autoComplete="new-password" /></label>
+      </div>}
+      {mode === 'signup' && step === 2 && <div className="choice-grid fade-in">{['Google', 'Friends', 'AI', 'Other'].map((item, i) => <button key={item} className={'choice-card ' + (heard === item ? 'selected' : '')} onClick={() => setHeard(item)}><span>{['◉', '◎', '✧', '↗'][i]}</span><b>{item}</b>{heard === item && <Check size={16} />}</button>)}</div>}
+      {mode === 'signup' && step === 3 && <div className="form-stack fade-in"><label>DATE OF BIRTH<input type="date" value={birth} onChange={e => setBirth(e.target.value)} max={new Date().toISOString().slice(0, 10)} /></label><div className="privacy-note"><ShieldCheck size={17} /> Your birth date is private and never shown on your public profile.</div></div>}
+      {mode === 'login' && <div className="form-stack fade-in"><label>USERNAME<input value={username} onChange={e => setUsername(e.target.value)} placeholder="yourcreativehandle" autoComplete="username" /></label><label>PASSWORD<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" onKeyDown={e => e.key === 'Enter' && submit()} /></label></div>}
+      {error && <div className="form-error">{error}</div>}
+      <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Setting things up…' : mode === 'login' ? 'Enter FameLoop' : step === 3 ? 'Start your journey' : 'Continue'} <span>↗</span></button>
+      {mode === 'signup' && step > 1 && <button className="text-button" onClick={() => setStep(step - 1)}>← Back</button>}
+      <div className="auth-switch">{mode === 'signup' ? 'Already have a space here?' : 'New around here?'} <button onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}>{mode === 'signup' ? 'Log in' : 'Create account'}</button></div>
+      <p className="auth-legal">By continuing, you agree to keep this community creative, kind and respectful.</p>
+    </div></section>
+  </main>;
+}
+
+function StoryRail({ stories, me, onAdd, onOpen }: { stories: Story[]; me: User; onAdd: () => void; onOpen: (story: Story) => void }) {
+  const seen = new Set<string>();
+  const unique = stories.filter(story => { if (seen.has(story.author.id)) return false; seen.add(story.author.id); return true; });
+  return <div className="story-rail">
+    <button className="story-item" onClick={onAdd}><span className="story-ring own"><Avatar user={me} size="lg" /></span><span className="story-name">Your story</span><i className="story-add"><Plus size={13} /></i></button>
+    {unique.map(story => <button className="story-item" key={story.id} onClick={() => onOpen(story)}><span className="story-ring"><Avatar user={story.author} size="lg" /></span><span className="story-name">{story.author.username}</span></button>)}
+    {unique.length === 0 && <div className="story-hint">Your next 24 hours could start here.</div>}
+  </div>;
+}
+
+function PostCard({ post, onLike, onComment, onProfile }: { post: Post; onLike: () => void; onComment: (text: string) => void; onProfile: () => void }) {
+  const [showComments, setShowComments] = useState(false);
+  const [comment, setComment] = useState('');
+  return <article className="post-card">
+    <div className="post-head"><button className="post-author" onClick={onProfile}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <BadgeCheck className="verified-icon" size={14} fill="currentColor" />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
+    <div className="post-media">{post.media_type === 'video' ? <video src={post.media_url} controls playsInline preload="metadata" /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
+    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={onLike} aria-label="Like"><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div><button className="action-button" aria-label="Save post"><Bookmark size={20} /></button></div>
+    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations</b><p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
+    {showComments && <form className="comment-form" onSubmit={e => { e.preventDefault(); if (comment.trim()) { onComment(comment.trim()); setComment(''); } }}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim()}>Post</button></form>}
+  </article>;
+}
+
+function UploadModal({ token, onClose, onDone }: { token: string; onClose: () => void; onDone: () => void }) {
+  const [kind, setKind] = useState<'post' | 'story'>('post');
+  const [file, setFile] = useState<File | null>(null);
+  const [caption, setCaption] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [rights, setRights] = useState(false);
+  async function submit() {
+    if (!file) return setMessage('Choose a photo or video first.');
+    if (!rights) return setMessage('Please confirm you own or have permission to publish this media.');
+    setBusy(true); setMessage('');
+    try {
+      const duration = file.type.startsWith('video/') ? await videoDuration(file) : 0;
+      const category = file.type.startsWith('video/') ? classifyVideo(duration) : 'photo';
+      await uploadMedia(file, kind, token, { caption, durationSeconds: duration, category });
+      setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : 'Post submitted for copyright and community review.');
+      onDone(); window.setTimeout(onClose, 1100);
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'Upload failed.'); }
+    finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal-card">
+    <div className="modal-top"><div><p className="eyebrow">MAKE SOMETHING MATTER</p><h2>Create a moment</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+    <div className="segmented"><button className={kind === 'post' ? 'active' : ''} onClick={() => setKind('post')}>Post</button><button className={kind === 'story' ? 'active' : ''} onClick={() => setKind('story')}>24h Story</button></div>
+    <label className="file-drop"><ImagePlus size={28} /><b>{file ? file.name : 'Choose your media'}</b><span>Photo or video · up to 100 MB · MP4 supported</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" onChange={e => setFile(e.target.files?.[0] || null)} /></label>
+    <label className="modal-label">CAPTION<textarea rows={3} value={caption} onChange={e => setCaption(e.target.value)} placeholder="Give this moment a little context…" maxLength={kind === 'story' ? 500 : 2200} /></label>
+    {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
+    <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
+    {message && <div className={message.includes('submitted') || message.includes('uploaded') ? 'notice-success' : 'form-error'}>{message}</div>}
+    <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Uploading securely…' : 'Submit for review'} <span>↗</span></button>
+  </div></div>;
+}
+
+function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [editing, setEditing] = useState(false);
+  const [display, setDisplay] = useState(profile.display_name);
+  const [bio, setBio] = useState(profile.bio);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  useEffect(() => { callApi<{ posts: Post[] }>('profile-posts', { username: profile.username }, token).then(r => setPosts(r.posts)).catch(e => setMessage(e.message)); }, [profile.username, token]);
+  async function save() {
+    setBusy(true); setMessage('');
+    try { await callApi('update-profile', { displayName: display, bio }, token); setEditing(false); onRefresh(); }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'Could not update profile.'); }
+    finally { setBusy(false); }
+  }
+  async function avatar(file?: File) {
+    if (!file) return;
+    setBusy(true);
+    try { await uploadMedia(file, 'avatar', token); onRefresh(); }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'Avatar upload failed.'); }
+    finally { setBusy(false); }
+  }
+  return <section className="profile-view"><div className="profile-hero"><div className="profile-avatar-wrap"><Avatar user={profile} size="xl" ring={profile.is_verified} />{own && <label className="avatar-edit"><Plus size={14} /><input type="file" accept="image/*" onChange={e => avatar(e.target.files?.[0])} /></label>}</div>
+    <div className="profile-main"><div className="profile-title"><h2>{profile.username} {profile.is_verified && <BadgeCheck className="verified-icon" fill="currentColor" />}</h2>{own && <button className="button button-soft" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit profile'}</button>}</div>
+      <div className="profile-stats"><span><b>{profile.posts_count}</b> posts</span><span><b>{profile.follower_count.toLocaleString()}</b> followers</span><span><b>{profile.following_count.toLocaleString()}</b> following</span></div>
+      {!editing && <><b>{profile.display_name}</b><p>{profile.bio || 'Creating my own little corner of the internet.'}</p><span className="verified-caption">{profile.is_verified ? 'Verified creator' : 'Creator on the rise'}</span></>}
+      {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
+      {message && <div className="form-error">{message}</div>}
+    </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
+    {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span></div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
+  </section>;
+}
+
+function AdminPanel({ token, onClose }: { token: string; onClose: () => void }) {
+  const [summary, setSummary] = useState<any>(null);
+  const [username, setUsername] = useState('');
+  const [hash, setHash] = useState('');
+  const [holder, setHolder] = useState('');
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [password, setPassword] = useState('');
+  const [gateOpen, setGateOpen] = useState(true);
+  const [gateOk, setGateOk] = useState(false);
+  const load = useCallback(() => callApi('admin-summary', {}, token).then(setSummary).catch(e => setMessage(e.message)), [token]);
+  useEffect(() => { if (gateOk) load(); }, [gateOk, load]);
+  async function enter() {
+    setBusy(true);
+    try { await callApi('admin-gate', { password }, token); setGateOk(true); setGateOpen(false); setMessage(''); }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'Admin access denied.'); }
+    finally { setBusy(false); }
+  }
+  async function action(actionName: string, payload: Record<string, unknown>) {
+    setBusy(true); setMessage('');
+    try { await callApi(actionName, payload, token); await load(); setMessage('Saved.'); }
+    catch (e) { setMessage(e instanceof Error ? e.message : 'Action failed.'); }
+    finally { setBusy(false); }
+  }
+  if (gateOpen) return <div className="modal-backdrop"><div className="modal-card admin-gate"><div className="modal-top"><div><p className="eyebrow">RESTRICTED AREA</p><h2>Admin access</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
+    <p className="muted">Enter the administrator passphrase configured in Supabase Edge Function secrets.</p><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Admin passphrase" onKeyDown={e => e.key === 'Enter' && enter()} />
+    {message && <div className="form-error">{message}</div>}<button className="button button-primary button-wide" onClick={enter} disabled={busy}>Unlock admin panel</button></div></div>;
+  return <section className="admin-view"><div className="admin-top"><div><p className="eyebrow">FAMELOOP CONTROL ROOM</p><h2>Creator operations</h2><p>Moderation, verification and world spotlight.</p></div><button className="button button-soft" onClick={onClose}>Close panel <X size={15} /></button></div>
+    {summary && <div className="admin-stats"><div><span>Pending review</span><b>{summary.pendingPosts?.length || 0}</b></div><div><span>Creators</span><b>{summary.userCount || 0}</b></div><div><span>Verified</span><b>{summary.verifiedCount || 0}</b></div></div>}
+    {message && <div className="notice-success">{message}</div>}
+    <div className="admin-section"><div className="section-title"><h3>Verification desk</h3><span>Grant verified status by exact username</span></div><div className="inline-action"><input value={username} onChange={e => setUsername(e.target.value)} placeholder="Creator username" /><button className="button button-primary" onClick={() => action('admin-verify', { username })} disabled={!username.trim() || busy}>Verify creator</button></div></div>
+    <div className="admin-section"><div className="section-title"><h3>Copyright fingerprint register</h3><span>Exact SHA-256 file matching only</span></div><div className="form-stack"><input value={hash} onChange={e => setHash(e.target.value)} placeholder="64-character SHA-256 hash" /><input value={holder} onChange={e => setHolder(e.target.value)} placeholder="Rights holder / source label" /><button className="button button-soft" onClick={() => action('admin-add-fingerprint', { sha256: hash, rightsHolder: holder })} disabled={busy || hash.length !== 64 || !holder.trim()}>Register exact match</button></div><p className="microcopy">This reference registry does not crawl the web or perform perceptual video recognition.</p></div>
+    <div className="admin-section"><div className="section-title"><h3>Moderation queue</h3><span>Unknown uploads stay out of public feeds</span></div>
+      {summary?.pendingPosts?.length ? summary.pendingPosts.map((post: any) => <div className="review-row" key={post.id}><div className="review-thumb">{post.media_type === 'video' ? <video src={post.media_url} /> : <img src={post.media_url} alt="" />}</div><div className="review-details"><b>@{post.author?.username || 'creator'} · {post.kind}</b><p>{post.caption || 'No caption'} · {post.copyright_status}</p></div><div className="review-actions"><button onClick={() => action('admin-moderate', { postId: post.id, decision: 'approve' })}>Approve</button><button className="danger-text" onClick={() => action('admin-moderate', { postId: post.id, decision: 'block' })}>Block</button><button onClick={() => action('admin-feature', { postId: post.id, featured: true })}>World feed</button></div></div>) : <div className="empty-card compact"><ShieldCheck size={25} /><h3>Queue is clear.</h3><p>New submissions will appear here for review.</p></div>}
+    </div></section>;
+}
+
+function RightRail({ user, onCreate, onOpenProfile, onFollow }: { user: User; onCreate: () => void; onOpenProfile: (profile: User) => void; onFollow: (profile: User) => void }) {
+  const [suggestions, setSuggestions] = useState<User[]>([]);
+  useEffect(() => { callApi<{ users: User[] }>('suggestions', {}, getSessionToken()).then(r => setSuggestions(r.users)).catch(() => undefined); }, []);
+  return <aside className="right-rail"><div className="rail-profile"><Avatar user={user} /><div><b>{user.username}</b><small>{user.display_name}</small></div><button onClick={() => onOpenProfile(user)}>VIEW</button></div>
+    <div className="fame-card"><div className="fame-card-top"><span>YOUR FAME METER</span><Crown size={17} /></div><div className="fame-score">{user.follower_count.toLocaleString()}<small>followers</small></div><p>Every follow is someone choosing to see more of what you make.</p><div className="fame-line"><i style={{ width: Math.min(100, user.follower_count / 5000) + '%' }} /></div><span className="fame-caption"><Zap size={13} /> Keep creating. Your next milestone is waiting.</span></div>
+    <div className="rail-section"><div className="rail-heading"><b>Creators to know</b><span>FOR YOU</span></div>{suggestions.length ? suggestions.slice(0, 5).map(p => <div className="suggestion" key={p.id}><button className="suggestion-profile" onClick={() => onOpenProfile(p)}><Avatar user={p} size="sm" /><span><b>{p.username}</b><small>{p.follower_count.toLocaleString()} followers</small></span></button><button className="follow-link" onClick={() => onFollow(p)}>Follow</button></div>) : <p className="muted tiny">Creators will show up as the community grows.</p>}</div>
+    <div className="rail-create"><div><Sparkles size={18} /><span>Have a moment to share?</span></div><button onClick={onCreate}>Create something <Plus size={15} /></button></div>
+    <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 FAMELOOP</p></div></aside>;
+}
+
+function SettingsPage({ token, user, onLogout }: { token: string; user: User; onLogout: () => void }) {
+  const [tracks, setTracks] = useState<any[]>([]);
+  const [title, setTitle] = useState('');
+  const [artist, setArtist] = useState('');
+  const [audioFile, setAudioFile] = useState<File | null>(null);
+  const [rights, setRights] = useState(false);
+  const [message, setMessage] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
+  async function addTrack() {
+    if (!audioFile || !title.trim() || !rights) return setMessage('Choose an audio file, add a title and confirm the rights.');
+    setBusy(true); setMessage('');
+    try {
+      await uploadMedia(audioFile, 'audio', token, { title, artist, rightsConfirmation: 'I own or have permission to upload and use this recording.' });
+      setTitle(''); setArtist(''); setAudioFile(null); setMessage('Audio track submitted to your library.');
+      setTracks((await callApi<{ tracks: any[] }>('list-audio', {}, token)).tracks);
+    } catch (e) { setMessage(e instanceof Error ? e.message : 'Could not add audio.'); }
+    finally { setBusy(false); }
+  }
+  return <div className="content-page settings-page"><div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings & creator tools.</h2><p>Manage your identity, audio library and account session.</p></div>
+    <div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
+      <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
+        <label className="audio-file">AUDIO FILE<input type="file" accept="audio/mpeg,audio/mp4" onChange={e => setAudioFile(e.target.files?.[0] || null)} /></label><label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I have the rights required to upload and use this audio.</label>
+        <button className="button button-primary" onClick={addTrack} disabled={busy}>{busy ? 'Adding…' : 'Add to library'}</button>{message && <p className="microcopy">{message}</p>}
+      </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
+      <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
+    </div>
+    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>FameLoop takes no creator revenue share. Live Razorpay/Stripe checkout and signed webhook handling still need merchant setup and testing.</p></div></div><div className="payment-note"><ShieldCheck /><span>Payment credentials are never accepted or stored in the browser. Payment integration is not enabled on this project yet.</span></div></div>
+    <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your FameLoop session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+  </div>;
+}
+
+function AppShell({ user: startUser, token, onLogout }: { user: User; token: string; onLogout: () => void }) {
+  const [user, setUser] = useState(startUser);
+  const [tab, setTab] = useState<Tab>('home');
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [stories, setStories] = useState<Story[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [storyOpen, setStoryOpen] = useState<Story | null>(null);
+  const [search, setSearch] = useState('');
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [viewProfile, setViewProfile] = useState<User | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState('');
+  const [updateReady, setUpdateReady] = useState(false);
+  const [mobileNav, setMobileNav] = useState(false);
+  const refreshUser = useCallback(async () => { const r = await callApi<{ user: User }>('me', {}, token); setUser(r.user); return r.user; }, [token]);
+  const loadFeed = useCallback(async () => { const r = await callApi<{ posts: Post[]; stories: Story[] }>('feed', {}, token); setPosts(r.posts); setStories(r.stories); }, [token]);
+  useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
+  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('fameloop:update-ready', update); return () => window.removeEventListener('fameloop:update-ready', update); }, []);
+  useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, []);
+  useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
+  async function like(post: Post) {
+    try { await callApi('like', { postId: post.id }, token); setPosts(items => items.map(p => p.id === post.id ? { ...p, liked: !p.liked, likes_count: Math.max(0, p.likes_count + (p.liked ? -1 : 1)) } : p)); }
+    catch (e) { setToast(e instanceof Error ? e.message : 'Could not like this post.'); }
+  }
+  async function comment(post: Post, text: string) {
+    try { await callApi('comment', { postId: post.id, content: text }, token); setPosts(items => items.map(p => p.id === post.id ? { ...p, comments_count: p.comments_count + 1 } : p)); setToast('Comment shared.'); }
+    catch (e) { setToast(e instanceof Error ? e.message : 'Could not post comment.'); }
+  }
+  async function runSearch() {
+    if (!search.trim()) return setSearchResults([]);
+    try { setSearchResults((await callApi<{ users: User[] }>('search-users', { query: search.trim() }, token)).users); }
+    catch (e) { setToast(e instanceof Error ? e.message : 'Search failed.'); }
+  }
+  async function follow(profile: User) {
+    try { await callApi('follow', { username: profile.username }, token); setToast('Your community is growing.'); await loadFeed(); await refreshUser(); }
+    catch (e) { setToast(e instanceof Error ? e.message : 'Could not follow creator.'); }
+  }
+  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? posts.filter(p => p.is_world_featured || p.kind !== 'photo') : posts, [posts, tab]);
+  if (loading) return <div className="loading-screen"><div className="loading-mark"><Sparkles /></div><p>Preparing your stage…</p></div>;
+  return <div className="app-shell"><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
+    <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><Sparkles size={19} /></span> fameloop</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
+      <button className={tab === 'home' ? 'active' : ''} onClick={() => { setTab('home'); setMobileNav(false); }}><Home /> Home</button>
+      <button className={tab === 'reels' ? 'active' : ''} onClick={() => { setTab('reels'); setMobileNav(false); }}><Clapperboard /> Reels</button>
+      <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> Explore</button>
+      <button onClick={() => setUploadOpen(true)}><Plus /> Create <span className="nav-plus">+</span></button>
+      <button className={tab === 'notifications' ? 'active' : ''} onClick={() => { setTab('notifications'); setMobileNav(false); }}><Bell /> Notifications</button>
+      <button className={tab === 'profile' ? 'active' : ''} onClick={() => { setViewProfile(null); setTab('profile'); setMobileNav(false); }}><UserRound /> Profile</button>
+    </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button><button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button><button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span><BadgeCheck size={15} className={user.is_verified ? 'verified-icon' : 'muted-icon'} /></div></div>
+  </aside>
+  {mobileNav && <button className="mobile-shade" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
+  <main className="main-column"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileNav(!mobileNav)}><Menu /></button>
+    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'Explore the world' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
+    <div className="topbar-actions"><div className="top-search"><Search size={16} /><input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Find creators" /><button onClick={runSearch}>Search</button></div><button className="create-small" onClick={() => setUploadOpen(true)}><Plus size={17} /> Create</button></div>
+  </header>
+  {searchResults.length > 0 && <div className="search-results">{searchResults.map(p => <button key={p.id} onClick={() => { setViewProfile(p); setTab('profile'); setSearchResults([]); }}><Avatar user={p} size="sm" /><b>@{p.username}</b>{p.is_verified && <BadgeCheck size={14} className="verified-icon" />}<span>{p.follower_count.toLocaleString()} followers</span><small>Open profile ↗</small></button>)}</div>}
+  {tab === 'home' && <div className="feed-layout"><div className="feed-column"><StoryRail stories={stories} me={user} onAdd={() => setUploadOpen(true)} onOpen={setStoryOpen} /><div className="feed-heading"><div><p className="eyebrow">A LITTLE INSPIRATION, DAILY</p><h2>Moments worth sharing.</h2></div><span>FEED / 01</span></div>
+    {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
+  </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={p => { setViewProfile(p); setTab('profile'); }} onFollow={follow} /></div>}
+  {tab === 'reels' && <div className="content-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Videos up to two minutes long, picked from the approved creator community.</p></div>{displayed.length ? <div className="reels-grid">{displayed.map(p => <div className="reel-tile" key={p.id}><video src={p.media_url} controls playsInline /><div><b>@{p.author.username}</b><span><Heart size={13} /> {p.likes_count}</span></div></div>)}</div> : <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Create a Reel</button></div>}</div>}
+  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">OUT THERE, IN THE WORLD</p><h2>Discover your next favorite creator.</h2><p>World spotlights and fresh video moments from the FameLoop community.</p></div>{displayed.length ? <div className="explore-grid">{displayed.map(p => <PostCard key={p.id} post={p} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />)}</div> : <div className="empty-card"><Compass /><h3>The world feed is warming up.</h3><p>Featured and approved creator posts will appear here.</p></div>}</div>}
+  {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <button className="button button-primary profile-follow" onClick={() => follow(viewProfile)}>Follow @{viewProfile.username}</button>}</div>}
+  {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
+  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
+  {tab === 'admin' && <AdminPanel token={token} onClose={() => setTab('home')} />}
+  <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
+  {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
+  {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
+  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh FameLoop update is ready.</span><button onClick={() => window.dispatchEvent(new Event('fameloop:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
+  {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
+  </div>;
+}
+
+export default function App() {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(getSessionToken());
+  const [checking, setChecking] = useState(Boolean(getSessionToken()));
+  useEffect(() => {
+    if (!token) { setChecking(false); return; }
+    callApi<{ user: User }>('me', {}, token).then(r => setUser(r.user)).catch(() => { clearSessionToken(); setToken(null); }).finally(() => setChecking(false));
+  }, [token]);
+  const logout = () => { if (token) callApi('logout', {}, token).catch(() => undefined); clearSessionToken(); setToken(null); setUser(null); };
+  if (checking) return <div className="loading-screen"><div className="loading-mark"><Sparkles /></div><p>Getting your space ready…</p></div>;
+  if (!user || !token) return <Welcome onAuth={(u, t) => { setUser(u); setToken(t); }} />;
+  return <AppShell user={user} token={token} onLogout={logout} />;
+}
