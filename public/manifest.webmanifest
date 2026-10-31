@@ -1,18 +1,1 @@
-{
-  "name": "FameLoop",
-  "short_name": "FameLoop",
-  "description": "Your creativity deserves an audience.",
-  "start_url": "/",
-  "scope": "/",
-  "display": "standalone",
-  "background_color": "#101014",
-  "theme_color": "#101014",
-  "icons": [
-    {
-      "src": "/icon.svg",
-      "sizes": "any",
-      "type": "image/svg+xml",
-      "purpose": "any maskable"
-    }
-  ]
-}
+{"name":"VYRA","short_name":"VYRA","description":"Make your mark.","start_url":"./","scope":"./","display":"standalone","background_color":"#0B1020","theme_color":"#0B1020","icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
