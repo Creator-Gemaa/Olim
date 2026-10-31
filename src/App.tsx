@@ -63,14 +63,14 @@ function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
   }
   return <main className="auth-shell">
     <section className="auth-art"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" />
-      <div className="auth-art-copy"><div className="brand brand-light"><span className="brand-mark"><Sparkles size={19} /></span> VYRA</div>
+      <div className="auth-art-copy"><div className="brand brand-light"><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</div>
         <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
         <p className="auth-subtitle">A space for the things you make, the people who find them, and the moments that stay.</p>
         <div className="auth-mantra"><span>✦</span> Real fame. Real people. Your moment.</div>
       </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>01 — 04</span></div>
     </section>
     <section className="auth-panel"><div className="auth-panel-inner">
-      <div className="mobile-brand brand"><span className="brand-mark"><Sparkles size={19} /></span> VYRA</div>
+      <div className="mobile-brand brand"><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</div>
       <div className="auth-head"><div className="step-kicker">{mode === 'signup' ? 'YOUR JOURNEY STARTS HERE' : 'WELCOME BACK'}</div>
         <h2>{mode === 'login' ? 'Good to see you.' : step === 1 ? 'Create your account.' : step === 2 ? 'One quick question.' : 'When is your birthday?'}</h2>
         <p>{mode === 'login' ? 'Pick up where your creativity left off.' : step === 1 ? 'Claim your corner of the internet.' : step === 2 ? 'How did VYRA find its way to you?' : 'We use this to personalize your experience.'}</p>
@@ -323,7 +323,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const refreshUser = useCallback(async () => { const r = await callApi<{ user: User }>('me', {}, token); setUser(r.user); return r.user; }, [token]);
   const loadFeed = useCallback(async () => { const r = await callApi<{ posts: Post[]; stories: Story[] }>('feed', {}, token); setPosts(r.posts); setStories(r.stories); }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
-  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('fameloop:update-ready', update); return () => window.removeEventListener('fameloop:update-ready', update); }, []);
+  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('vyra:update-ready', update); return () => window.removeEventListener('vyra:update-ready', update); }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   async function like(post: Post) {
@@ -344,9 +344,9 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     catch (e) { setToast(e instanceof Error ? e.message : 'Could not follow creator.'); }
   }
   const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? posts.filter(p => p.is_world_featured || p.kind !== 'photo') : posts, [posts, tab]);
-  if (loading) return <div className="loading-screen"><div className="loading-mark"><Sparkles /></div><p>Preparing your stage…</p></div>;
+  if (loading) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell"><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
-    <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><Sparkles size={19} /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
+    <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
       <button className={tab === 'home' ? 'active' : ''} onClick={() => { setTab('home'); setMobileNav(false); }}><Home /> Home</button>
       <button className={tab === 'reels' ? 'active' : ''} onClick={() => { setTab('reels'); setMobileNav(false); }}><Clapperboard /> Reels</button>
       <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> Explore</button>
@@ -373,7 +373,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
-  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('fameloop:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
+  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('vyra:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
   {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
   </div>;
 }
@@ -387,7 +387,7 @@ export default function App() {
     callApi<{ user: User }>('me', {}, token).then(r => setUser(r.user)).catch(() => { clearSessionToken(); setToken(null); }).finally(() => setChecking(false));
   }, [token]);
   const logout = () => { if (token) callApi('logout', {}, token).catch(() => undefined); clearSessionToken(); setToken(null); setUser(null); };
-  if (checking) return <div className="loading-screen"><div className="loading-mark"><Sparkles /></div><p>Getting your space ready…</p></div>;
+  if (checking) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Getting your space ready…</p></div>;
   if (!user || !token) return <Welcome onAuth={(u, t) => { setUser(u); setToken(t); }} />;
   return <AppShell user={user} token={token} onLogout={logout} />;
 }
