@@ -453,3 +453,10 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 @media(prefers-reduced-motion:reduce){
   *,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important;transition-duration:.01ms!important}
 }
+
+.dm-safety-toggle{width:100%;text-align:left;background:#080808;border:0;border-bottom:1px solid #262626;cursor:pointer}
+.dm-safety-toggle:hover{background:#121212;color:#b5ddff}
+.dm-safety-code{padding:14px 18px;border-bottom:1px solid #262626;background:#0e0e0e;display:grid;gap:8px}
+.dm-safety-code small{font-size:9px;color:#a8a8a8;text-transform:uppercase;letter-spacing:1.2px}
+.dm-safety-code strong{font:700 15px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:1px;color:#9cd5ff;overflow-wrap:anywhere}
+.dm-safety-code p{margin:0;color:#a8a8a8;font-size:10px;line-height:1.55}
