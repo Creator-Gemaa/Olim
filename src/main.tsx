@@ -14,7 +14,7 @@ if ('serviceWorker' in navigator) {
     try {
       const registration = await navigator.serviceWorker.register('/sw.js');
       const announce = () => {
-        if (registration.waiting && navigator.serviceWorker.controller) window.dispatchEvent(new Event('fameloop:update-ready'));
+        if (registration.waiting && navigator.serviceWorker.controller) window.dispatchEvent(new Event('vyra:update-ready'));
       };
       announce();
       registration.addEventListener('updatefound', () => {
@@ -22,7 +22,7 @@ if ('serviceWorker' in navigator) {
         worker?.addEventListener('statechange', () => { if (worker.state === 'installed') announce(); });
       });
       window.setInterval(() => registration.update().catch(() => undefined), 60 * 60 * 1000);
-      window.addEventListener('fameloop:apply-update', () => registration.waiting?.postMessage({ type: 'SKIP_WAITING' }));
+      window.addEventListener('vyra:apply-update', () => registration.waiting?.postMessage({ type: 'SKIP_WAITING' }));
     } catch (error) { console.warn('FameLoop offline updates unavailable', error); }
   });
 }
