@@ -569,8 +569,9 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
 }
 
 
-function DirectMessages({ token, user, target, onClearTarget, onToast }: {
-  token: string; user: User; target: User | null; onClearTarget: () => void; onToast: (message: string) => void;
+function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentityReady }: {
+  token: string; user: User; target: User | null; onClearTarget: () => void;
+  onToast: (message: string) => void; onIdentityReady: (identity: E2EEIdentity | null) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -579,7 +580,21 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
   const [composer, setComposer] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [keyLoading, setKeyLoading] = useState(true);
+  const [keyState, setKeyState] = useState<'missing' | 'locked' | 'ready'>('missing');
+  const [storedKey, setStoredKey] = useState<StoredE2EEIdentity | null>(null);
+  const [identity, setIdentity] = useState<E2EEIdentity | null>(null);
+  const [password, setPassword] = useState('');
+  const [keyError, setKeyError] = useState('');
+  const [decoded, setDecoded] = useState<Record<string, string>>({});
+  const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
+  const [isRecording, setIsRecording] = useState(false);
+  const [callInfo, setCallInfo] = useState<any>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
+  const photoInputRef = useRef<HTMLInputElement | null>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const peerKeyCache = useRef<Map<string, CryptoKey>>(new Map());
 
   const loadInbox = useCallback(async () => {
     const result = await callApi<{ conversations: DMConversation[] }>('dm-inbox', {}, token);
@@ -587,8 +602,28 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
   }, [token]);
 
   useEffect(() => {
+    let active = true;
+    callApi<{ key: (StoredE2EEIdentity & { username: string }) | null }>('e2ee-key-get', { username: user.username }, token)
+      .then(result => {
+        if (!active) return;
+        if (result.key) {
+          setStoredKey(result.key);
+          setKeyState('locked');
+        } else {
+          setStoredKey(null);
+          setKeyState('missing');
+        }
+      })
+      .catch(error => { if (active) setKeyError(error instanceof Error ? error.message : 'Secure messaging is unavailable.'); })
+      .finally(() => { if (active) setKeyLoading(false); });
+    return () => { active = false; };
+  }, [token, user.username]);
+
+  useEffect(() => {
     loadInbox().catch(error => onToast(error instanceof Error ? error.message : 'Could not load messages.'))
       .finally(() => setLoading(false));
+    const refresh = window.setInterval(() => loadInbox().catch(() => undefined), 5000);
+    return () => window.clearInterval(refresh);
   }, [loadInbox, onToast]);
 
   useEffect(() => {
@@ -598,16 +633,34 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
     setMessages([]);
     setComposer('');
     onClearTarget();
-  }, [target, onClearTarget]);
+  }, [target]);
 
   useEffect(() => {
     if (!selectedId) { setMessages([]); return; }
     let active = true;
-    callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token)
-      .then(result => { if (active) setMessages(result.messages); })
-      .catch(error => { if (active) onToast(error instanceof Error ? error.message : 'Could not load this chat.'); });
-    return () => { active = false; };
+    const loadMessages = async () => {
+      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
+      if (active) setMessages(result.messages);
+    };
+    loadMessages().catch(error => onToast(error instanceof Error ? error.message : 'Could not load this chat.'));
+    const refresh = window.setInterval(() => loadMessages().catch(() => undefined), 3500);
+    return () => { active = false; window.clearInterval(refresh); };
   }, [selectedId, token, onToast]);
+
+  useEffect(() => {
+    let active = true;
+    const poll = async () => {
+      try {
+        const result = await callApi<{ call: any | null }>('dm-call-poll', {}, token);
+        if (!active) return;
+        if (result.call) setCallInfo((current: any) => current?.id === result.call.id ? { ...current, ...result.call } : result.call);
+        else setCallInfo(null);
+      } catch { /* Call presence can retry quietly. */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [token]);
 
   useEffect(() => {
     if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
@@ -618,20 +671,129 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
   const sent = conversations.filter(item => item.status === 'pending' && item.requester_id === user.id);
   const chats = conversations.filter(item => item.status === 'accepted');
 
+  async function unlockOrCreateKeys(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    setKeyError('');
+    try {
+      if (storedKey) {
+        const opened = await unlockE2EEIdentity(user.id, password, storedKey);
+        setIdentity(opened);
+        onIdentityReady(opened);
+      } else {
+        const created = await createE2EEIdentity(user.id, password);
+        await callApi('e2ee-key-set', {
+          publicKey: created.stored.publicKey,
+          wrappedPrivateKey: created.stored.wrappedPrivateKey,
+          salt: created.stored.salt,
+          iv: created.stored.iv,
+        }, token);
+        setStoredKey(created.stored);
+        setIdentity(created.identity);
+        setKeyState('ready');
+        onIdentityReady(created.identity);
+      }
+      setPassword('');
+      setKeyState('ready');
+      peerKeyCache.current.clear();
+      await loadInbox();
+    } catch (error) {
+      setKeyError(error instanceof Error ? error.message : 'Could not unlock secure messaging.');
+    } finally { setBusy(false); }
+  }
+
+  function lockKeys() {
+    setIdentity(null);
+    setKeyState(storedKey ? 'locked' : 'missing');
+    setDecoded({});
+    setAttachmentUrls({});
+    peerKeyCache.current.clear();
+    onIdentityReady(null);
+  }
+
+  async function getPeerPublicKey(peer: User): Promise<JsonWebKey> {
+    if (!identity) throw new Error('Unlock secure messaging first.');
+    const result = await callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: peer.username }, token);
+    if (!result.key?.publicKey) throw new Error('@' + peer.username + ' needs to enable secure messaging before you can chat.');
+    return result.key.publicKey;
+  }
+
+  async function getConversationKey(conversation: DMConversation): Promise<CryptoKey> {
+    if (!identity) throw new Error('Unlock secure messaging first.');
+    const cached = peerKeyCache.current.get(conversation.id);
+    if (cached) return cached;
+    const publicKey = await getPeerPublicKey(conversation.otherUser);
+    const key = await deriveConversationKey(identity, publicKey, conversation.id);
+    peerKeyCache.current.set(conversation.id, key);
+    return key;
+  }
+
+  useEffect(() => {
+    let active = true;
+    const urls: string[] = [];
+    async function decryptVisibleMessages() {
+      if (!identity || !selected) { setDecoded({}); setAttachmentUrls({}); return; }
+      try {
+        const key = await getConversationKey(selected);
+        const textMap: Record<string, string> = {};
+        const urlMap: Record<string, string> = {};
+        for (const message of messages) {
+          if (message.e2ee_version === 1) {
+            try { textMap[message.id] = await decryptText(message.content, key); }
+            catch { textMap[message.id] = 'Unable to decrypt this message. Check that both devices use the same encryption key.'; }
+          } else {
+            textMap[message.id] = message.content + '  ·  Older message, not end-to-end encrypted';
+          }
+          if (message.media_url && message.attachment_iv && message.attachment_mime) {
+            try {
+              const response = await fetch(message.media_url);
+              if (!response.ok) throw new Error('Encrypted file unavailable');
+              const ciphertext = await response.blob();
+              const plain = await decryptFile(ciphertext, message.attachment_iv, key, selected.id, message.attachment_mime);
+              const url = URL.createObjectURL(plain);
+              urls.push(url);
+              urlMap[message.id] = url;
+            } catch {
+              textMap[message.id] = 'Encrypted attachment could not be opened on this device.';
+            }
+          }
+        }
+        if (active) { setDecoded(textMap); setAttachmentUrls(urlMap); }
+      } catch (error) {
+        if (active) onToast(error instanceof Error ? error.message : 'Could not decrypt this conversation.');
+      }
+    }
+    void decryptVisibleMessages();
+    return () => { active = false; urls.forEach(url => URL.revokeObjectURL(url)); };
+  }, [identity, selectedId, messages, token]);
+
   async function sendRequest(event: FormEvent) {
     event.preventDefault();
     if (!composeTarget || !composer.trim()) return;
+    if (!identity) { onToast('Unlock secure messaging first.'); return; }
     setBusy(true);
     try {
-      const result = await callApi<{ conversationId: string; status: string }>('dm-start', {
-        username: composeTarget.username, content: composer.trim(),
-      }, token);
+      const result = await callApi<{ conversationId: string; status: string }>('dm-start', { username: composeTarget.username }, token);
+      if (result.status === 'incoming') {
+        await loadInbox();
+        setComposeTarget(null);
+        setSelectedId(result.conversationId);
+        onToast('This creator has already requested to message you. Review the request.');
+        return;
+      }
+      const peerPublic = await getPeerPublicKey(composeTarget);
+      const key = await deriveConversationKey(identity, peerPublic, result.conversationId);
+      const encrypted = await encryptText(composer.trim(), key);
+      if (result.status === 'accepted') {
+        await callApi('dm-send', { conversationId: result.conversationId, content: encrypted, messageType: 'text' }, token);
+      } else {
+        await callApi('dm-request-send', { conversationId: result.conversationId, content: encrypted }, token);
+      }
       setComposer('');
       setComposeTarget(null);
       await loadInbox();
       setSelectedId(result.conversationId);
-      onToast(result.status === 'pending' ? 'Message request sent. The chat opens when they accept.' :
-        result.status === 'incoming' ? 'They have already requested to message you. Review the request.' : 'Message sent.');
+      onToast(result.status === 'pending' ? 'Encrypted message request sent.' : 'Encrypted message sent.');
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Could not send message request.');
     } finally { setBusy(false); }
@@ -654,52 +816,158 @@ function DirectMessages({ token, user, target, onClearTarget, onToast }: {
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
-    if (!selectedId || !composer.trim()) return;
+    if (!selected || !composer.trim() || !identity) return;
     setBusy(true);
     try {
-      await callApi('dm-send', { conversationId: selectedId, content: composer.trim() }, token);
+      const key = await getConversationKey(selected);
+      const content = await encryptText(composer.trim(), key);
+      await callApi('dm-send', { conversationId: selected.id, content, messageType: 'text' }, token);
       setComposer('');
-      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
+      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
       setMessages(result.messages);
       await loadInbox();
     } catch (error) { onToast(error instanceof Error ? error.message : 'Message could not be sent.'); }
     finally { setBusy(false); }
   }
 
+  async function sendAttachment(file: Blob, messageType: 'image' | 'voice', mime: string) {
+    if (!selected || selected.status !== 'accepted' || !identity) throw new Error('Unlock secure messages and select an accepted chat first.');
+    if (file.size > 15 * 1024 * 1024) throw new Error('Attachments must be 15 MB or smaller.');
+    setBusy(true);
+    try {
+      const key = await getConversationKey(selected);
+      const encryptedFile = await encryptFile(file, key, selected.id);
+      const path = await uploadEncryptedAttachment(encryptedFile.blob, selected.id, token, messageType, mime);
+      const encryptedCaption = await encryptText(messageType === 'image' ? 'Photo' : 'Voice note', key);
+      await callApi('dm-send', {
+        conversationId: selected.id, content: encryptedCaption, messageType,
+        attachmentPath: path, attachmentIv: encryptedFile.iv, attachmentMime: mime,
+      }, token);
+      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
+      setMessages(result.messages);
+      await loadInbox();
+    } finally { setBusy(false); }
+  }
+
+  async function choosePhoto(file?: File) {
+    if (!file) return;
+    try {
+      if (!file.type.startsWith('image/')) throw new Error('Choose an image to share.');
+      await sendAttachment(file, 'image', file.type);
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not share photo.'); }
+    if (photoInputRef.current) photoInputRef.current.value = '';
+  }
+
+  async function toggleRecording() {
+    if (isRecording) {
+      recorderRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === 'undefined') {
+        throw new Error('Voice recording is not available in this browser.');
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      recordingStreamRef.current = stream;
+      const recorder = new MediaRecorder(stream);
+      recorderRef.current = recorder;
+      const chunks: BlobPart[] = [];
+      recorder.ondataavailable = event => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = () => {
+        const blob = new Blob(chunks, { type: recorder.mimeType || 'audio/webm' });
+        const mime = (blob.type || 'audio/webm').split(';')[0];
+        recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+        recordingStreamRef.current = null;
+        void sendAttachment(blob, 'voice', mime).catch(error => onToast(error instanceof Error ? error.message : 'Voice note failed.'));
+      };
+      recorder.start();
+      setIsRecording(true);
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not start recording.'); }
+  }
+
+  useEffect(() => () => {
+    if (recorderRef.current && recorderRef.current.state !== 'inactive') recorderRef.current.stop();
+    recordingStreamRef.current?.getTracks().forEach(track => track.stop());
+  }, []);
+
+  async function startCall(callType: 'audio' | 'video') {
+    if (!selected || selected.status !== 'accepted') return;
+    try {
+      const result = await callApi<{ call: any }>('dm-call-start', { conversationId: selected.id, callType }, token);
+      setCallInfo(result.call);
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not start call.'); }
+  }
+
   const conversationButton = (item: DMConversation, label?: string) =>
     <button key={item.id} className={'dm-list-item ' + (selectedId === item.id ? 'active' : '')} onClick={() => { setComposeTarget(null); setSelectedId(item.id); }}>
       <Avatar user={item.otherUser} size="md" />
-      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.content || 'Start a conversation'}</small></span>
+      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.preview || 'Encrypted chat'}</small></span>
       <small className="dm-list-time">{ago(item.last_message_at)}</small>
     </button>;
 
   return <section className="content-page dm-page">
-    <div className="page-intro"><p className="eyebrow">ONE-TO-ONE, CREATOR TO CREATOR</p><h2>Your messages.</h2><p>Requests are private. A chat opens only after the recipient accepts.</p></div>
+    <div className="page-intro dm-page-intro"><p className="eyebrow">PRIVATE BY DESIGN</p><h2>Your messages.</h2><p>New messages, photos and voice notes are encrypted on this device before being sent.</p></div>
+    {keyState !== 'ready' && <form className="e2ee-unlock-card" onSubmit={unlockOrCreateKeys}>
+      <div className="e2ee-lock-icon"><LockKeyhole size={23} /></div>
+      <div className="e2ee-copy"><b>{keyState === 'missing' ? 'Set up secure messaging' : 'Unlock your encrypted messages'}</b>
+        <small>{storedKey ? 'Enter your VYRA password to unlock your private key on this device.' : 'Your private key is generated on this device and stored only as a password-encrypted backup.'}</small>
+      </div>
+      <label><span>VYRA password</span><input type="password" value={password} onChange={event => setPassword(event.target.value)} required minLength={10} autoComplete="current-password" /></label>
+      {keyError && <div className="form-error">{keyError}</div>}
+      <button className="button button-primary" disabled={busy || keyLoading}>{busy ? 'Securing…' : storedKey ? 'Unlock messages' : 'Create encryption key'}</button>
+    </form>}
+    {keyState === 'ready' && <div className="e2ee-status"><LockKeyhole size={14} /><span>End-to-end encryption is enabled for new messages.</span><button onClick={lockKeys}>Lock</button></div>}
     <div className="dm-layout">
       <aside className="dm-inbox">
         <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => onToast('Could not refresh messages.'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
         {loading && <p className="dm-empty-note">Loading your inbox…</p>}
-        {incoming.length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.length}</span></h4>{incoming.map(item => conversationButton(item, 'Wants to connect with you'))}</div>}
-        {sent.length > 0 && <div className="dm-group"><h4>SENT REQUESTS</h4>{sent.map(item => conversationButton(item, 'Waiting for their approval'))}</div>}
+        {incoming.length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.length}</span></h4>{incoming.map(item => conversationButton(item, 'Message request'))}</div>}
+        {sent.length > 0 && <div className="dm-group"><h4>SENT REQUESTS</h4>{sent.map(item => conversationButton(item, 'Waiting for acceptance'))}</div>}
         <div className="dm-group"><h4>CHATS</h4>{chats.map(item => conversationButton(item))}</div>
         {!loading && conversations.length === 0 && <p className="dm-empty-note">No messages yet. Open a creator profile and choose Message to start a request.</p>}
       </aside>
 
       <section className="dm-thread">
         {composeTarget ? <>
-          <div className="dm-thread-head"><Avatar user={composeTarget} size="md" /><div><b>@{composeTarget.username} {composeTarget.is_verified && <VerifiedBadge />}</b><small>New message request</small></div></div>
-          <div className="dm-request-intro"><MessageCircle size={28} /><h3>Start with a message.</h3><p>Your request appears in their inbox. They must accept before the private chat opens.</p></div>
-          <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={16} /> Send request</button></form>
+          <div className="dm-thread-head"><Avatar user={composeTarget} size="md" /><div><b>@{composeTarget.username} {composeTarget.is_verified && <VerifiedBadge />}</b><small>New message request · encrypted</small></div></div>
+          <div className="dm-request-intro"><LockKeyhole size={28} /><h3>Start a private conversation.</h3><p>Your message is encrypted before leaving your device. They must accept before the chat opens.</p></div>
+          <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} disabled={!identity} /><button className="button button-primary" disabled={busy || !composer.trim() || !identity}><Send size={16} /> Send request</button></form>
         </> : selected ? <>
-          <div className="dm-thread-head"><Avatar user={selected.otherUser} size="md" /><div><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'Private chat' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Message request'}</small></div></div>
+          <div className="dm-thread-head">
+            <Avatar user={selected.otherUser} size="md" />
+            <div className="dm-thread-title"><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'End-to-end encrypted chat' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Encrypted message request'}</small></div>
+            {selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
+          </div>
           {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
-          <div className="dm-messages" ref={messagesRef}>{messages.map(message => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '')}><div className="dm-bubble"><p>{message.content}</p><small>{ago(message.created_at)}</small></div></div>)}</div>
-          {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}><textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder="Write a message…" /><button className="button button-primary" disabled={busy || !composer.trim()} aria-label="Send message"><Send size={17} /> Send</button></form>
-            : selected.requester_id === user.id ? <p className="dm-closed-note">Your request is waiting for @ {selected.otherUser.username} to accept. You can chat here after approval.</p>
+          <div className="dm-encryption-note"><LockKeyhole size={12} /> New message content and attachments are encrypted end-to-end.</div>
+          <div className="dm-messages" ref={messagesRef}>
+            {messages.map(message => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '')}>
+              <div className="dm-bubble">
+                {message.message_type === 'shared_post' && message.shared_post && <div className="dm-shared-post">
+                  {message.shared_post.media_type === 'video' ? <video src={message.shared_post.media_url} muted playsInline /> : <img src={message.shared_post.media_url} alt="Shared post" />}
+                  <b>@{message.shared_post.author.username}</b><p>{message.shared_post.caption}</p><small>Shared from VYRA</small>
+                </div>}
+                {message.message_type === 'image' && attachmentUrls[message.id] && <img className="dm-attachment-image" src={attachmentUrls[message.id]} alt="End-to-end encrypted photo" />}
+                {message.message_type === 'voice' && attachmentUrls[message.id] && <audio className="dm-voice-player" controls src={attachmentUrls[message.id]} />}
+                {message.e2ee_version === 1 && !decoded[message.id] ? <p className="dm-decrypting">Decrypting…</p> : <p>{decoded[message.id] || (message.e2ee_version === 1 ? '🔒 Unlock secure messaging to read this.' : message.content)}</p>}
+                <small>{ago(message.created_at)} {message.e2ee_version === 1 && <LockKeyhole size={10} />}</small>
+              </div>
+            </div>)}
+          </div>
+          {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}>
+            <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
+            <button type="button" className="dm-attach-btn" title="Send an encrypted photo" onClick={() => photoInputRef.current?.click()} disabled={!identity || busy}><Image size={19} /></button>
+            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={!identity || busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
+            <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={identity ? 'Message…' : 'Unlock secure messaging to chat'} disabled={!identity || busy} />
+            <button className="button button-primary dm-send-button" disabled={busy || !composer.trim() || !identity} aria-label="Send encrypted message"><Send size={17} /></button>
+          </form> : selected.requester_id === user.id
+            ? <p className="dm-closed-note">Your request is waiting for @ {selected.otherUser.username} to accept. You can chat here after approval.</p>
             : <p className="dm-closed-note">This conversation stays closed until you accept the request.</p>}
-        </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a request or an accepted chat, or visit a creator profile to send the first message.</p></div>}
+        </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a message request or accepted chat, or visit a creator profile to send the first message.</p></div>}
       </section>
     </div>
+    {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={() => setCallInfo(null)} onToast={onToast} />}
   </section>;
 }
 
