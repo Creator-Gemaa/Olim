@@ -60,6 +60,6 @@ export function generateVideoCopy(file: File, durationSeconds = 0): GeneratedVid
       ? Math.floor(totalSeconds / 60) + "m " + (totalSeconds % 60) + "s"
       : totalSeconds + "s"
     : "video";
-  const description = "A " + durationLabel + " video shared on VYRA. Original file: " + file.name + ".";
+  const description = "A " + (durationLabel ? durationLabel + " video" : "video") + " shared on VYRA. Original file: " + file.name + ".";
   return { title: title.slice(0, 160), description: description.slice(0, 2200) };
 }
