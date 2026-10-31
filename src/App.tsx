@@ -305,6 +305,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   const startedRef = useRef(false);
   const processedRef = useRef(0);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const [callStatus, setCallStatus] = useState<'ringing' | 'active' | 'ended'>(call.status);
   const [phase, setPhase] = useState(call.status === 'active' ? 'Connecting…' : 'Calling…');
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(call.call_type === 'video');
@@ -328,7 +329,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
       setPhase('Connecting…');
       startedRef.current = false;
       // The call status change triggers the peer connection setup effect.
-      if (result.call) setPhase('Connecting…');
+      if (result.call) { setCallStatus('active'); setPhase('Connecting…'); }
     } catch (error) { onToast(error instanceof Error ? error.message : 'Could not answer call.'); }
   }
 
@@ -340,7 +341,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   }
 
   useEffect(() => {
-    if (call.status !== 'active' && !isCaller) return;
+    if (callStatus !== 'active' && !isCaller) return;
     if (startedRef.current) return;
     startedRef.current = true;
     let disposed = false;
@@ -360,8 +361,11 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
         pc.ontrack = event => {
           const next = event.streams[0] || new MediaStream([event.track]);
           setRemoteStream(next);
-          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = next;
-          if (remoteAudioRef.current) remoteAudioRef.current.srcObject = next;
+          if (call.call_type === 'audio') {
+            if (remoteAudioRef.current) remoteAudioRef.current.srcObject = next;
+          } else if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = next;
+          }
         };
         pc.onicecandidate = event => {
           if (event.candidate) sendSignal('ice', event.candidate.toJSON()).catch(() => undefined);
@@ -387,12 +391,12 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
       disposed = true;
       cleanup();
     };
-  }, [call.id, call.status, call.call_type, isCaller, sendSignal, cleanup, onToast]);
+  }, [call.id, callStatus, call.call_type, isCaller, sendSignal, cleanup, onToast]);
 
   useEffect(() => {
-    if (!peerRef.current) return;
     let active = true;
     async function pollSignals() {
+      if (!peerRef.current) return;
       try {
         const result = await callApi<{ signals: any[]; status: string }>('dm-call-signals', {
           callId: call.id, afterId: processedRef.current,
@@ -429,7 +433,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     const timer = window.setInterval(() => { void pollSignals(); }, 900);
     void pollSignals();
     return () => { active = false; window.clearInterval(timer); };
-  }, [call.id, token, isCaller, sendSignal, cleanup, onClose]);
+  }, [call.id, token, callStatus, isCaller, sendSignal, cleanup, onClose]);
 
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) remoteVideoRef.current.srcObject = remoteStream;
@@ -447,7 +451,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     setCameraOn(next);
   }
 
-  const incoming = !isCaller && call.status === 'ringing';
+  const incoming = !isCaller && callStatus === 'ringing';
   return <div className="call-overlay">
     <div className="call-window">
       <div className="call-window-top"><span><LockKeyhole size={14} /> Peer-to-peer encrypted call</span><button className="icon-button" onClick={() => endCall(incoming ? 'decline' : 'end')}><X size={17} /></button></div>
@@ -458,6 +462,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           <video ref={localVideoRef} autoPlay muted playsInline className="call-local-video" />
           {!remoteStream && <div className="call-connecting"><div className="call-avatar"><Avatar user={{username:'',display_name:'VYRA'}} size="xl" /></div><b>{phase}</b><small>Waiting for the other creator…</small></div>}
         </div>}
+        <p className="call-network-note">Direct peer-to-peer WebRTC. Some restricted networks may need a TURN relay for calls to connect.</p>
       {!incoming && <div className="call-control-bar">
         <span>{phase}</span>
         <button className={!micOn ? 'off' : ''} onClick={toggleMic} aria-label="Toggle microphone">{micOn ? <Mic /> : <MicOff />}</button>
@@ -468,13 +473,14 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   </div>;
 }
 
-function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare }: {
+function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare, token }: {
   posts: Post[];
   onLike: (post: Post) => void;
   onProfile: (user: User) => void;
   onView: (postId: string) => void;
   onComment: (post: Post, text: string) => Promise<void>;
   onShare: (post: Post) => void;
+  token: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const countedRef = useRef<Set<string>>(new Set());
@@ -532,7 +538,7 @@ function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare }: {
         </div>
       </article>)}
     </div>
-    {commentPost && <ShortCommentsSheet post={commentPost} token={getSessionToken()} onClose={() => setCommentPost(null)} onComment={onComment} />}
+    {commentPost && <ShortCommentsSheet post={commentPost} token={token} onClose={() => setCommentPost(null)} onComment={onComment} />}
   </>;
 }
 
