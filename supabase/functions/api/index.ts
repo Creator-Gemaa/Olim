@@ -345,7 +345,7 @@ Deno.serve(async (req: Request) => {
       const size = Number(body.size || 0);
       const hash = String(body.sha256 || "").toLowerCase();
       const family = mimeFamily(mime);
-      const maxSize = family === "video" ? 100 * 1024 * 1024 : family === "image" ? 12 * 1024 * 1024 : family === "audio" ? 25 * 1024 * 1024 : 0;
+      const maxSize = family === "video" ? 50 * 1024 * 1024 : family === "image" ? 12 * 1024 * 1024 : family === "audio" ? 25 * 1024 * 1024 : 0;
       if (!["post", "story", "avatar", "audio"].includes(purpose) || !family || !maxSize || !Number.isFinite(size) || size < 1 || size > maxSize) return fail("Unsupported media type or file size.", 422, origin);
       if (!/^[a-f0-9]{64}$/.test(hash)) return fail("Media fingerprint is invalid.", 422, origin);
       if ((purpose === "story" || purpose === "post") && family === "audio") return fail("Audio files belong in your audio library.", 422, origin);
@@ -368,7 +368,18 @@ Deno.serve(async (req: Request) => {
       const family = mimeFamily(mime);
       if (!path.startsWith(current.profile.id + "/") || !/^[a-f0-9]{64}$/.test(hash)) return fail("Invalid upload reference.", 422, origin);
       if (!(await storageFileExists(path))) return fail("Upload was not found in media storage.", 422, origin);
-      const match = await exactCopyrightMatch(hash);
+      const { data: uploadedBlob, error: downloadError } = await db.storage.from("media").download(path);
+      if (downloadError || !uploadedBlob) return fail("Uploaded media could not be verified.", 422, origin);
+      if (uploadedBlob.size !== Number(body.size || 0) || (uploadedBlob.type && uploadedBlob.type !== mime)) {
+        await db.storage.from("media").remove([path]);
+        return fail("Uploaded file metadata did not match the upload request.", 422, origin);
+      }
+      const verifiedHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", await uploadedBlob.arrayBuffer())));
+      if (verifiedHash !== hash) {
+        await db.storage.from("media").remove([path]);
+        return fail("The uploaded file fingerprint did not match its actual bytes.", 422, origin);
+      }
+      const match = await exactCopyrightMatch(verifiedHash);
       if (match) {
         await db.storage.from("media").remove([path]);
         return fail("This exact file is registered as copyrighted and has been blocked.", 451, origin);
