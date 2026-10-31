@@ -6,12 +6,42 @@ let mainWindow = null;
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = false;
 
-autoUpdater.on('update-downloaded', () => {
+function sendUpdateStatus(status, extra = {}) {
+  mainWindow?.webContents.send('vyra:desktop-update-status', { status, ...extra });
+}
+
+autoUpdater.on('checking-for-update', () => sendUpdateStatus('checking'));
+autoUpdater.on('update-available', info => sendUpdateStatus('available', {
+  version: info.version,
+  message: `VYRA v${info.version} was found. Downloading automatically…`
+}));
+autoUpdater.on('update-not-available', info => sendUpdateStatus('latest', {
+  version: info.version,
+  message: `VYRA v${info.version} is already installed.`
+}));
+autoUpdater.on('download-progress', progress => sendUpdateStatus('downloading', {
+  percent: Math.round(progress.percent)
+}));
+autoUpdater.on('update-downloaded', info => {
+  sendUpdateStatus('ready', { version: info.version });
   mainWindow?.webContents.send('vyra:desktop-update-ready');
 });
 autoUpdater.on('error', error => {
-  console.error('VYRA update check failed:', error?.message || error);
-  mainWindow?.webContents.send('vyra:desktop-update-error', String(error?.message || error));
+  const message = String(error?.message || error);
+  console.error('VYRA update check failed:', message);
+  sendUpdateStatus('error', { message });
+  mainWindow?.webContents.send('vyra:desktop-update-error', message);
+});
+
+ipcMain.on('vyra:check-for-updates', () => {
+  if (!app.isPackaged || process.platform !== 'win32') {
+    sendUpdateStatus('error', { message: 'The Windows updater is available in the installed VYRA desktop app only.' });
+    return;
+  }
+  autoUpdater.checkForUpdates().catch(error => {
+    const message = String(error?.message || error);
+    sendUpdateStatus('error', { message });
+  });
 });
 ipcMain.on('vyra:install-update', () => {
   if (app.isPackaged && process.platform === 'win32') autoUpdater.quitAndInstall(false, true);
