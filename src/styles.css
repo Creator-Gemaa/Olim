@@ -460,3 +460,88 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .dm-safety-code small{font-size:9px;color:#a8a8a8;text-transform:uppercase;letter-spacing:1.2px}
 .dm-safety-code strong{font:700 15px/1.8 ui-monospace,SFMono-Regular,Consolas,monospace;letter-spacing:1px;color:#9cd5ff;overflow-wrap:anywhere}
 .dm-safety-code p{margin:0;color:#a8a8a8;font-size:10px;line-height:1.55}
+
+
+/* VYRA-native video controls and app-wide preference switches */
+.vyra-player{position:relative;overflow:hidden;isolation:isolate;background:#050505}
+.vyra-player>video{display:block;width:100%;height:100%;object-fit:contain;background:#050505;cursor:pointer}
+.post-video-player{width:100%;max-height:620px;aspect-ratio:16/9}
+.post-video-player>video{max-height:620px;object-fit:contain}
+.reel-video-player{position:absolute;inset:0;width:100%;height:100%;background:#050505}
+.reel-video-player>video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain}
+.story-video-player{width:100%;height:100%}
+.story-video-player>video{object-fit:contain}
+.vyra-player-center{position:absolute;z-index:4;left:50%;top:50%;transform:translate(-50%,-50%);width:58px;height:58px;display:grid;place-items:center;border:1px solid #ffffff65;border-radius:50%;background:#08080bbd;color:#fff;opacity:1;backdrop-filter:blur(12px);transition:opacity .18s,transform .18s;cursor:pointer}
+.vyra-player-center:hover{transform:translate(-50%,-50%) scale(1.06)}
+.vyra-player.is-playing .vyra-player-center{opacity:0;pointer-events:none}
+.vyra-player.is-playing:hover .vyra-player-center{opacity:.75;pointer-events:auto}
+.vyra-player-controls{position:absolute;z-index:5;left:10px;right:10px;bottom:9px;display:grid;grid-template-columns:28px minmax(30px,1fr) auto;align-items:center;gap:9px;padding:7px 9px;border:1px solid #ffffff20;border-radius:10px;background:#08080bbd;color:#fff;opacity:.88;backdrop-filter:blur(12px)}
+.vyra-player-controls button{width:25px;height:25px;display:grid;place-items:center;border:0;border-radius:50%;background:transparent;color:#fff;cursor:pointer}
+.vyra-player-controls input{width:100%;min-width:0;height:4px;accent-color:#ff4f78;cursor:pointer}
+.vyra-player-controls span{font-size:9px;font-variant-numeric:tabular-nums;color:#f4f4f4;white-space:nowrap}
+.reel-video-player .vyra-player-center{width:62px;height:62px}
+.story-video-player .vyra-player-controls{left:13px;right:13px;bottom:62px}
+.global-sound-toggle{display:flex;align-items:center;gap:7px;height:36px;padding:0 10px;border:1px solid var(--line);border-radius:999px;background:#1b1b22;color:#e7e7e7;font-size:10px;font-weight:700;white-space:nowrap;cursor:pointer;transition:background .2s,border-color .2s}
+.global-sound-toggle:hover{background:#292933;border-color:#555}
+.global-control-icon{display:grid;place-items:center}
+.theme-switch{display:flex;align-items:center;gap:6px;padding:4px 6px;border:1px solid var(--line);border-radius:999px;background:#1b1b22;color:#eee;cursor:pointer}
+.theme-switch-icon{width:18px;height:18px;display:grid;place-items:center}
+.theme-switch-track{position:relative;width:35px;height:19px;border-radius:999px;background:#4b4b55;transition:background .2s}
+.theme-switch-track i{position:absolute;top:2px;left:2px;width:15px;height:15px;border-radius:50%;background:#fff;box-shadow:0 1px 4px #0005;transition:transform .2s}
+.theme-switch.is-dark .theme-switch-track{background:#7657d6}
+.theme-switch.is-dark .theme-switch-track i{transform:translateX(16px)}
+.theme-switch.is-light .theme-switch-track{background:#d7d9df}
+.theme-switch.is-light .theme-switch-track i{transform:translateX(0)}
+.theme-switch:focus-visible,.global-sound-toggle:focus-visible,.vyra-player button:focus-visible,.vyra-player input:focus-visible{outline:2px solid #7cb9ff;outline-offset:3px}
+@media(max-width:800px){.global-sound-toggle{width:36px;height:36px;justify-content:center;padding:0}.global-control-label{display:none}.theme-switch{gap:3px;padding:3px 4px}.theme-switch-track{width:31px}.theme-switch.is-dark .theme-switch-track i{transform:translateX(12px)}}
+@media(max-width:480px){.topbar-actions{gap:5px}.global-sound-toggle{width:32px;height:32px}.theme-switch{padding:2px 3px}.theme-switch-icon{width:15px}.theme-switch-track{width:28px;height:17px}.theme-switch-track i{width:13px;height:13px;top:2px;left:2px}.theme-switch.is-dark .theme-switch-track i{transform:translateX(11px)}}
+
+/* Light appearance; dark remains the default. */
+.app-shell[data-theme="light"]{--line:#e5e7ee;--muted:#707785;color:#202631;background:#f5f6fa}
+.app-shell[data-theme="light"] .sidebar,.app-shell[data-theme="light"] .topbar{background:#fff;border-color:#e6e8ee}
+.app-shell[data-theme="light"] .main-column{background:#f5f6fa}
+.app-shell[data-theme="light"] .side-label,.app-shell[data-theme="light"] .feed-heading>span{color:#9299a5}
+.app-shell[data-theme="light"] .side-nav button,.app-shell[data-theme="light"] .sidebar-bottom>button{color:#535c69}
+.app-shell[data-theme="light"] .side-nav button:hover,.app-shell[data-theme="light"] .side-nav button.active,.app-shell[data-theme="light"] .sidebar-bottom>button:hover,.app-shell[data-theme="light"] .sidebar-bottom>button.active{background:#eef0f6;color:#202631}
+.app-shell[data-theme="light"] .sidebar-user{border-color:#e6e8ee}
+.app-shell[data-theme="light"] .sidebar-user b,.app-shell[data-theme="light"] .topbar-title,.app-shell[data-theme="light"] .feed-heading h2,.app-shell[data-theme="light"] .page-intro h2,.app-shell[data-theme="light"] .settings-card-head h3{color:#202631}
+.app-shell[data-theme="light"] .top-search{background:#f3f4f7;border-color:#e1e4eb;color:#707785}
+.app-shell[data-theme="light"] .top-search input{color:#202631}
+.app-shell[data-theme="light"] .global-sound-toggle,.app-shell[data-theme="light"] .theme-switch{background:#f4f5f8;color:#303744;border-color:#e0e3ea}
+.app-shell[data-theme="light"] .story-rail,.app-shell[data-theme="light"] .post-card,.app-shell[data-theme="light"] .settings-card,.app-shell[data-theme="light"] .admin-stats>div{background:#fff;border-color:#e6e8ee}
+.app-shell[data-theme="light"] .story-name,.app-shell[data-theme="light"] .post-author b,.app-shell[data-theme="light"] .post-meta,.app-shell[data-theme="light"] .post-meta p,.app-shell[data-theme="light"] .notification-row b,.app-shell[data-theme="light"] .profile-main>p{color:#303744}
+.app-shell[data-theme="light"] .post-author small,.app-shell[data-theme="light"] .post-meta .comment-link,.app-shell[data-theme="light"] .page-intro>p:last-child,.app-shell[data-theme="light"] .settings-card-head p,.app-shell[data-theme="light"] .notification-row small{color:#747d8b}
+.app-shell[data-theme="light"] .post-media{background:#e9ebf0}
+.app-shell[data-theme="light"] .post-actions .action-button{color:#505967}
+.app-shell[data-theme="light"] .post-actions .action-button.liked{color:#e83d66}
+.app-shell[data-theme="light"] .content-page,.app-shell[data-theme="light"] .feed-layout{color:#202631}
+.app-shell[data-theme="light"] .profile-stats,.app-shell[data-theme="light"] .profile-posts-head{color:#596372}
+.app-shell[data-theme="light"] .profile-stats b{color:#202631}
+.app-shell[data-theme="light"] .profile-posts-head{border-color:#e5e7ed}
+.app-shell[data-theme="light"] .notification-row,.app-shell[data-theme="light"] .admin-section{border-color:#e5e7ed}
+.app-shell[data-theme="light"] .settings-form label,.app-shell[data-theme="light"] .modal-label{color:#56606e}
+.app-shell[data-theme="light"] .settings-form input,.app-shell[data-theme="light"] .settings-form select,.app-shell[data-theme="light"] .settings-form textarea,.app-shell[data-theme="light"] .edit-profile input,.app-shell[data-theme="light"] .edit-profile textarea{background:#f7f8fb;border-color:#dfe3ea;color:#202631}
+.app-shell[data-theme="light"] .track-row{border-color:#e5e7ed;color:#303744}
+.app-shell[data-theme="light"] .payment-note{background:#f0f3f7;color:#4c5665}
+.app-shell[data-theme="light"] .app-footer{border-color:#e5e7ed;color:#89919d}
+.app-shell[data-theme="light"] .empty-card{background:linear-gradient(145deg,#fff,#f5f6fb);border-color:#d9dfea}
+.app-shell[data-theme="light"] .empty-card h3{color:#202631}
+.app-shell[data-theme="light"] .empty-card p,.app-shell[data-theme="light"] .microcopy{color:#707987}
+.app-shell[data-theme="light"] .search-results,.app-shell[data-theme="light"] .modal-card{background:#fff;border-color:#e5e7ed;color:#202631}
+.app-shell[data-theme="light"] .search-results button:hover{background:#f1f3f7}
+.app-shell[data-theme="light"] .search-results b,.app-shell[data-theme="light"] .modal-top h2{color:#202631}
+.app-shell[data-theme="light"] .modal-card input,.app-shell[data-theme="light"] .modal-card textarea,.app-shell[data-theme="light"] .modal-card select{background:#f7f8fb;color:#202631;border-color:#dfe3ea}
+.app-shell[data-theme="light"] .dm-layout,.app-shell[data-theme="light"] .dm-inbox,.app-shell[data-theme="light"] .dm-thread,.app-shell[data-theme="light"] .dm-messages{background:#fff;border-color:#e5e7ed}
+.app-shell[data-theme="light"] .dm-thread-head,.app-shell[data-theme="light"] .dm-compose,.app-shell[data-theme="light"] .dm-inbox-head,.app-shell[data-theme="light"] .dm-request-banner{background:#f7f8fb;border-color:#e5e7ed}
+.app-shell[data-theme="light"] .dm-thread-title b,.app-shell[data-theme="light"] .dm-inbox-head b,.app-shell[data-theme="light"] .dm-message-content,.app-shell[data-theme="light"] .dm-inbox-row b{color:#29313d}
+.app-shell[data-theme="light"] .dm-thread-title small,.app-shell[data-theme="light"] .dm-inbox-row small,.app-shell[data-theme="light"] .dm-empty-note{color:#737d8b}
+.app-shell[data-theme="light"] .dm-compose textarea,.app-shell[data-theme="light"] .dm-unlock-card input{background:#fff;color:#202631}
+.app-shell[data-theme="light"] .dm-safety-toggle,.app-shell[data-theme="light"] .dm-safety-code{background:#f6f7fa;border-color:#e5e7ed;color:#303744}
+.app-shell[data-theme="light"] .dm-safety-code strong{color:#345c9c}
+.app-shell[data-theme="light"] .shorts-comments-sheet,.app-shell[data-theme="light"] .share-sheet{background:#fff;color:#202631;border-color:#e5e7ed}
+.app-shell[data-theme="light"] .shorts-comments-sheet header,.app-shell[data-theme="light"] .shorts-comment-compose{border-color:#e5e7ed}
+.app-shell[data-theme="light"] .shorts-comment b,.app-shell[data-theme="light"] .share-sheet h3,.app-shell[data-theme="light"] .share-friend b{color:#29313d}
+.app-shell[data-theme="light"] .shorts-comment p,.app-shell[data-theme="light"] .share-preview p{color:#505b69}
+.app-shell[data-theme="light"] .shorts-comment-compose input{color:#202631}
+.app-shell[data-theme="light"] .story-viewer-card{background:#fff}
+@media(prefers-reduced-motion:reduce){.vyra-player-center,.theme-switch-track,.theme-switch-track i{transition:none}}
