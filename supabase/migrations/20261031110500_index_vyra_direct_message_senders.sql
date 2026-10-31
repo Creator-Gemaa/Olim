@@ -1,0 +1,1 @@
+create index if not exists dm_messages_sender_idx on public.dm_messages(sender_id);
