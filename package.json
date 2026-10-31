@@ -1,7 +1,7 @@
 {
-  "name": "fameloop",
+  "name": "vyra-social",
   "private": true,
-  "version": "0.1.0",
+  "version": "1.0.0",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -10,13 +10,17 @@
     "dev": "vite --host 0.0.0.0",
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 0.0.0.0",
-    "test": "vitest run"
+    "test": "vitest run",
+    "desktop:package": "node scripts/generate-windows-icon.mjs && electron-builder --win nsis --x64 --publish never",
+    "android:sync": "npm run build && npx cap sync android"
   },
   "dependencies": {
     "@supabase/supabase-js": "2.95.0",
     "lucide-react": "0.468.0",
     "react": "19.1.1",
-    "react-dom": "19.1.1"
+    "react-dom": "19.1.1",
+    "@capacitor/android": "8.6.0",
+    "@capacitor/core": "8.6.0"
   },
   "devDependencies": {
     "@types/react": "19.1.16",
@@ -24,6 +28,47 @@
     "@vitejs/plugin-react": "5.0.4",
     "typescript": "5.9.3",
     "vite": "7.1.12",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "@capacitor/assets": "3.0.5",
+    "@capacitor/cli": "8.6.0",
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "png-to-ico": "3.0.2",
+    "sharp": "0.35.5"
+  },
+  "description": "VYRA creator-first social app",
+  "main": "electron/main.cjs",
+  "build": {
+    "appId": "com.vyra.social",
+    "productName": "VYRA",
+    "directories": {
+      "buildResources": "electron",
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "win": {
+      "icon": "electron/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "VYRA"
+    },
+    "artifactName": "VYRA-Setup.${ext}"
   }
 }
