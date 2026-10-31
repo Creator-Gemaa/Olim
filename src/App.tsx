@@ -4,7 +4,7 @@ import {
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
   Share2, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
-  Volume2, VolumeX, Moon, Sun, Play, Pause,
+  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, videoDuration } from './lib/media';
