@@ -545,3 +545,11 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .app-shell[data-theme="light"] .shorts-comment-compose input{color:#202631}
 .app-shell[data-theme="light"] .story-viewer-card{background:#fff}
 @media(prefers-reduced-motion:reduce){.vyra-player-center,.theme-switch-track,.theme-switch-track i{transition:none}}
+
+/* Keep portrait creator videos at their natural shape and layer controls above the Reel shade. */
+.post-video-player{height:auto;aspect-ratio:auto}
+.post-video-player>video{height:auto;max-height:620px}
+.reel-video-player{z-index:2}
+.reel-shade{z-index:1}
+.reel-overlay{z-index:3}
+.reel-side-actions{z-index:4}
