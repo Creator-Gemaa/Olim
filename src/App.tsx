@@ -198,6 +198,276 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
 }
 
 
+
+function ShortCommentsSheet({ post, token, onClose, onComment }: {
+  post: Post; token: string; onClose: () => void; onComment: (post: Post, text: string) => Promise<void>;
+}) {
+  const [items, setItems] = useState<any[]>([]);
+  const [draft, setDraft] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(async () => {
+    const result = await callApi<{ comments: any[] }>('post-comments', { postId: post.id }, token);
+    setItems(result.comments);
+  }, [post.id, token]);
+  useEffect(() => {
+    let active = true;
+    callApi<{ comments: any[] }>('post-comments', { postId: post.id }, token)
+      .then(result => { if (active) setItems(result.comments); })
+      .catch(() => undefined)
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [post.id, token]);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!draft.trim()) return;
+    setBusy(true);
+    try {
+      await onComment(post, draft.trim());
+      setDraft('');
+      await load();
+    } finally { setBusy(false); }
+  }
+  return <div className="modal-backdrop shorts-comments-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+    <section className="shorts-comments-sheet" role="dialog" aria-label="Reel comments">
+      <div className="sheet-grab" />
+      <header><div><b>Comments</b><small>{post.comments_count.toLocaleString()} comments</small></div><button className="icon-button" onClick={onClose}><X /></button></header>
+      <div className="shorts-comment-list">
+        {loading ? <p className="dm-empty-note">Loading comments…</p> : items.length ? items.map(item =>
+          <article className="shorts-comment" key={item.id}><Avatar user={item.author} size="sm" /><div><b>@{item.author?.username || 'creator'}</b><p>{item.content}</p><small>{ago(item.created_at)}</small></div></article>
+        ) : <div className="dm-no-selection"><MessageCircle size={26} /><b>Start the conversation.</b><p>Be the first to comment on this Reel.</p></div>}
+      </div>
+      <form className="shorts-comment-compose" onSubmit={submit}>
+        <Avatar user={post.author} size="sm" />
+        <input autoFocus value={draft} onChange={event => setDraft(event.target.value)} maxLength={1000} placeholder="Add a comment…" />
+        <button disabled={busy || !draft.trim()}>{busy ? 'Sending…' : 'Post'}</button>
+      </form>
+    </section>
+  </div>;
+}
+
+function ShareSheet({ post, token, identity, onClose, onToast }: {
+  post: Post; token: string; identity: E2EEIdentity | null; onClose: () => void; onToast: (message: string) => void;
+}) {
+  const [conversations, setConversations] = useState<DMConversation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sending, setSending] = useState<string | null>(null);
+  useEffect(() => {
+    let active = true;
+    callApi<{ conversations: DMConversation[] }>('dm-inbox', {}, token)
+      .then(result => { if (active) setConversations(result.conversations.filter(item => item.status === 'accepted')); })
+      .catch(error => onToast(error instanceof Error ? error.message : 'Could not load friends.'))
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [token, onToast]);
+  async function send(item: DMConversation) {
+    if (!identity) { onToast('Open Messages and unlock encrypted chat first.'); return; }
+    setSending(item.id);
+    try {
+      const peer = await callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: item.otherUser.username }, token);
+      if (!peer.key?.publicKey) throw new Error('@' + item.otherUser.username + ' has not enabled secure messages yet.');
+      const key = await deriveConversationKey(identity, peer.key.publicKey, item.id);
+      const content = await encryptText('Shared a Reel with you', key);
+      await callApi('dm-share-post', { conversationId: item.id, postId: post.id, content }, token);
+      onToast('Reel shared with @' + item.otherUser.username + '.');
+      onClose();
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Could not share this Reel.');
+    } finally { setSending(null); }
+  }
+  return <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && onClose()}>
+    <section className="share-sheet" role="dialog" aria-label="Share Reel with friends">
+      <header><div><p className="eyebrow">SEND PRIVATELY</p><h3>Share with friends</h3></div><button className="icon-button" onClick={onClose}><X /></button></header>
+      <div className="share-preview"><div className="share-preview-thumb">{post.media_type === 'video' ? <video src={post.media_url} muted /> : <img src={post.media_url} alt="" />}</div><div><b>@{post.author.username}</b><p>{post.caption || 'A Reel on VYRA'}</p></div></div>
+      {!identity && <div className="secure-warning"><LockKeyhole size={16} /> Unlock secure messaging in Messages before sharing.</div>}
+      <div className="share-friends">
+        {loading ? <p className="dm-empty-note">Loading your chats…</p> : conversations.length ? conversations.map(item =>
+          <button key={item.id} className="share-friend" onClick={() => send(item)} disabled={!identity || sending !== null}>
+            <Avatar user={item.otherUser} size="md" />
+            <span><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>Encrypted chat</small></span>
+            <span className="share-send">{sending === item.id ? 'Sending…' : <Send size={17} />}</span>
+          </button>
+        ) : <div className="dm-no-selection"><MessageCircle size={26} /><b>No chats to share with yet.</b><p>Accept a message request or start a chat first.</p></div>}
+      </div>
+      <p className="share-sheet-note"><LockKeyhole size={13} /> The share note is encrypted before it leaves this device.</p>
+    </section>
+  </div>;
+}
+
+function CallOverlay({ call, user, token, onClose, onToast }: {
+  call: any; user: User; token: string; onClose: () => void; onToast: (message: string) => void;
+}) {
+  const localVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
+  const remoteAudioRef = useRef<HTMLAudioElement | null>(null);
+  const peerRef = useRef<RTCPeerConnection | null>(null);
+  const localStreamRef = useRef<MediaStream | null>(null);
+  const startedRef = useRef(false);
+  const processedRef = useRef(0);
+  const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const [phase, setPhase] = useState(call.status === 'active' ? 'Connecting…' : 'Calling…');
+  const [micOn, setMicOn] = useState(true);
+  const [cameraOn, setCameraOn] = useState(call.call_type === 'video');
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const isCaller = call.caller_id === user.id;
+
+  const sendSignal = useCallback(async (signalType: 'offer' | 'answer' | 'ice', payload: any) => {
+    await callApi('dm-call-signal', { callId: call.id, signalType, payload }, token);
+  }, [call.id, token]);
+
+  const cleanup = useCallback(() => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    localStreamRef.current?.getTracks().forEach(track => track.stop());
+    localStreamRef.current = null;
+  }, []);
+
+  async function answerCall() {
+    try {
+      const result = await callApi<{ call: any }>('dm-call-accept', { callId: call.id }, token);
+      setPhase('Connecting…');
+      startedRef.current = false;
+      // The call status change triggers the peer connection setup effect.
+      if (result.call) setPhase('Connecting…');
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not answer call.'); }
+  }
+
+  async function endCall(decision: 'end' | 'decline' = 'end') {
+    try { await callApi('dm-call-end', { callId: call.id, decision }, token); }
+    catch { /* The local media still must be stopped. */ }
+    cleanup();
+    onClose();
+  }
+
+  useEffect(() => {
+    if (call.status !== 'active' && !isCaller) return;
+    if (startedRef.current) return;
+    startedRef.current = true;
+    let disposed = false;
+    (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          audio: true, video: call.call_type === 'video',
+        });
+        if (disposed) { stream.getTracks().forEach(track => track.stop()); return; }
+        localStreamRef.current = stream;
+        if (localVideoRef.current) localVideoRef.current.srcObject = stream;
+        const pc = new RTCPeerConnection({
+          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
+        });
+        peerRef.current = pc;
+        stream.getTracks().forEach(track => pc.addTrack(track, stream));
+        pc.ontrack = event => {
+          const next = event.streams[0] || new MediaStream([event.track]);
+          setRemoteStream(next);
+          if (remoteVideoRef.current) remoteVideoRef.current.srcObject = next;
+          if (remoteAudioRef.current) remoteAudioRef.current.srcObject = next;
+        };
+        pc.onicecandidate = event => {
+          if (event.candidate) sendSignal('ice', event.candidate.toJSON()).catch(() => undefined);
+        };
+        pc.onconnectionstatechange = () => {
+          if (pc.connectionState === 'connected') setPhase('Connected');
+          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setPhase('Connection interrupted');
+        };
+        if (isCaller) {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          await sendSignal('offer', offer);
+          setPhase('Ringing…');
+        } else {
+          setPhase('Joining call…');
+        }
+      } catch (error) {
+        setPhase('Microphone or camera unavailable');
+        onToast(error instanceof Error ? error.message : 'Could not start call media.');
+      }
+    })();
+    return () => {
+      disposed = true;
+      cleanup();
+    };
+  }, [call.id, call.status, call.call_type, isCaller, sendSignal, cleanup, onToast]);
+
+  useEffect(() => {
+    if (!peerRef.current) return;
+    let active = true;
+    async function pollSignals() {
+      try {
+        const result = await callApi<{ signals: any[]; status: string }>('dm-call-signals', {
+          callId: call.id, afterId: processedRef.current,
+        }, token);
+        if (!active) return;
+        if (result.status === 'ended' || result.status === 'declined' || result.status === 'missed') {
+          setPhase('Call ended');
+          cleanup();
+          onClose();
+          return;
+        }
+        for (const signal of result.signals) {
+          if (!active || signal.id <= processedRef.current) continue;
+          processedRef.current = signal.id;
+          const pc = peerRef.current;
+          if (!pc) break;
+          if (signal.signal_type === 'offer' && !isCaller && !pc.remoteDescription) {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
+            for (const ice of pendingIceRef.current.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(ice));
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            await sendSignal('answer', answer);
+          } else if (signal.signal_type === 'answer' && isCaller && !pc.remoteDescription) {
+            await pc.setRemoteDescription(new RTCSessionDescription(signal.payload));
+            for (const ice of pendingIceRef.current.splice(0)) await pc.addIceCandidate(new RTCIceCandidate(ice));
+          } else if (signal.signal_type === 'ice') {
+            const ice = signal.payload as RTCIceCandidateInit;
+            if (pc.remoteDescription) await pc.addIceCandidate(new RTCIceCandidate(ice));
+            else pendingIceRef.current.push(ice);
+          }
+        }
+      } catch { /* A temporary signaling miss should not terminate the call. */ }
+    }
+    const timer = window.setInterval(() => { void pollSignals(); }, 900);
+    void pollSignals();
+    return () => { active = false; window.clearInterval(timer); };
+  }, [call.id, token, isCaller, sendSignal, cleanup, onClose]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) remoteVideoRef.current.srcObject = remoteStream;
+    if (remoteAudioRef.current && remoteStream) remoteAudioRef.current.srcObject = remoteStream;
+  }, [remoteStream]);
+
+  function toggleMic() {
+    const next = !micOn;
+    localStreamRef.current?.getAudioTracks().forEach(track => { track.enabled = next; });
+    setMicOn(next);
+  }
+  function toggleCamera() {
+    const next = !cameraOn;
+    localStreamRef.current?.getVideoTracks().forEach(track => { track.enabled = next; });
+    setCameraOn(next);
+  }
+
+  const incoming = !isCaller && call.status === 'ringing';
+  return <div className="call-overlay">
+    <div className="call-window">
+      <div className="call-window-top"><span><LockKeyhole size={14} /> Peer-to-peer encrypted call</span><button className="icon-button" onClick={() => endCall(incoming ? 'decline' : 'end')}><X size={17} /></button></div>
+      {incoming ? <div className="call-incoming"><div className="call-avatar"><Phone size={30} /></div><h2>Incoming {call.call_type} call</h2><p>Accept to connect directly.</p><div><button className="call-answer" onClick={answerCall}><Phone size={17} /> Answer</button><button className="call-decline" onClick={() => endCall('decline')}><PhoneOff size={17} /> Decline</button></div></div>
+        : <div className="call-media-stage">
+          <video ref={remoteVideoRef} autoPlay playsInline className={'call-remote-video ' + (call.call_type === 'audio' ? 'audio-only' : '')} />
+          {call.call_type === 'audio' && <audio ref={remoteAudioRef} autoPlay />}
+          <video ref={localVideoRef} autoPlay muted playsInline className="call-local-video" />
+          {!remoteStream && <div className="call-connecting"><div className="call-avatar"><Avatar user={{username:'',display_name:'VYRA'}} size="xl" /></div><b>{phase}</b><small>Waiting for the other creator…</small></div>}
+        </div>}
+      {!incoming && <div className="call-control-bar">
+        <span>{phase}</span>
+        <button className={!micOn ? 'off' : ''} onClick={toggleMic} aria-label="Toggle microphone">{micOn ? <Mic /> : <MicOff />}</button>
+        {call.call_type === 'video' && <button className={!cameraOn ? 'off' : ''} onClick={toggleCamera} aria-label="Toggle camera">{cameraOn ? <Camera /> : <CameraOff />}</button>}
+        <button className="call-hangup" onClick={() => endCall('end')} aria-label="End call"><PhoneOff /></button>
+      </div>}
+    </div>
+  </div>;
+}
+
 function ReelsFeed({ posts, onLike, onProfile, onView }: {
   posts: Post[]; onLike: (post: Post) => void; onProfile: (user: User) => void; onView: (postId: string) => void;
 }) {
