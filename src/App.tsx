@@ -468,11 +468,17 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   </div>;
 }
 
-function ReelsFeed({ posts, onLike, onProfile, onView }: {
-  posts: Post[]; onLike: (post: Post) => void; onProfile: (user: User) => void; onView: (postId: string) => void;
+function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare }: {
+  posts: Post[];
+  onLike: (post: Post) => void;
+  onProfile: (user: User) => void;
+  onView: (postId: string) => void;
+  onComment: (post: Post, text: string) => Promise<void>;
+  onShare: (post: Post) => void;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const countedRef = useRef<Set<string>>(new Set());
+  const [commentPost, setCommentPost] = useState<Post | null>(null);
   useEffect(() => {
     const root = scrollerRef.current;
     if (!root) return;
@@ -491,9 +497,7 @@ function ReelsFeed({ posts, onLike, onProfile, onView }: {
             countedRef.current.add(id);
             onView(id);
           }
-        } else {
-          video.pause();
-        }
+        } else video.pause();
       });
     }, { root, threshold: [0.1, 0.65, 0.9] });
     videos.forEach(video => observer.observe(video));
@@ -501,26 +505,35 @@ function ReelsFeed({ posts, onLike, onProfile, onView }: {
   }, [posts, onView]);
 
   if (!posts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
-  return <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
-    {posts.map(post => <article className="reel-screen" key={post.id}>
-      <video data-post-id={post.id} src={post.media_url} autoPlay muted loop playsInline controls preload="metadata" />
-      <div className="reel-shade" />
-      <div className="reel-overlay">
-        <button className="reel-author" onClick={() => onProfile(post.author)}>
-          <Avatar user={post.author} size="sm" />
-          <span>@{post.author.username} {post.author.is_verified && <VerifiedBadge />}</span>
-        </button>
-        {post.caption && <p className="reel-caption">{post.caption}</p>}
-        <div className="reel-stats"><span><Eye size={14} /> {(post.views_count || 0).toLocaleString()} views</span><span><Heart size={14} /> {post.likes_count.toLocaleString()}</span></div>
-      </div>
-      <div className="reel-side-actions">
-        <button className={'reel-like ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label="Like Reel">
-          <Heart size={24} fill={post.liked ? 'currentColor' : 'none'} /><span>{post.likes_count.toLocaleString()}</span>
-        </button>
-        <button onClick={() => onProfile(post.author)} aria-label="Open creator profile"><Avatar user={post.author} size="sm" /></button>
-      </div>
-    </article>)}
-  </div>;
+  return <>
+    <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
+      {posts.map(post => <article className="reel-screen" key={post.id}>
+        <video data-post-id={post.id} src={post.media_url} autoPlay muted loop playsInline controls preload="metadata" />
+        <div className="reel-shade" />
+        <div className="reel-overlay">
+          <button className="reel-author" onClick={() => onProfile(post.author)}>
+            <Avatar user={post.author} size="sm" />
+            <span>@{post.author.username} {post.author.is_verified && <VerifiedBadge />}</span>
+          </button>
+          {post.caption && <p className="reel-caption">{post.caption}</p>}
+          <div className="reel-stats"><span><Eye size={14} /> {(post.views_count || 0).toLocaleString()} views</span><span><Heart size={14} /> {post.likes_count.toLocaleString()}</span></div>
+        </div>
+        <div className="reel-side-actions">
+          <button className={'reel-like ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label="Like Reel">
+            <Heart size={25} fill={post.liked ? 'currentColor' : 'none'} /><span>{post.likes_count.toLocaleString()}</span>
+          </button>
+          <button onClick={() => setCommentPost(post)} aria-label="View comments">
+            <MessageCircle size={25} /><span>{post.comments_count.toLocaleString()}</span>
+          </button>
+          <button onClick={() => onShare(post)} aria-label="Share Reel with friends">
+            <Send size={24} /><span>Share</span>
+          </button>
+          <button onClick={() => onProfile(post.author)} aria-label="Open creator profile"><Avatar user={post.author} size="sm" /></button>
+        </div>
+      </article>)}
+    </div>
+    {commentPost && <ShortCommentsSheet post={commentPost} token={getSessionToken()} onClose={() => setCommentPost(null)} onComment={onComment} />}
+  </>;
 }
 
 function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
