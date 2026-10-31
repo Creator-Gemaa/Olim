@@ -775,3 +775,22 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
   .bulk-status{font-size:7px;padding:4px 5px}
   .bulk-file-drop{height:100px}
 }
+
+/* VYRA version checker and creator credit */
+.update-settings-card .settings-card-head>svg{flex:none}
+.update-status-row{display:flex;align-items:flex-start;gap:12px;margin:18px 0 12px;padding:13px;background:#211f29;border:1px solid #ffffff12;border-radius:10px}
+.update-state-dot{width:9px;height:9px;flex:none;margin-top:4px;border-radius:50%;background:#90899d;box-shadow:0 0 0 4px #90899d1b}
+.update-state-checking,.update-state-downloading{background:#b494f3;box-shadow:0 0 0 4px #b494f31c}
+.update-state-available{background:#f3c77c;box-shadow:0 0 0 4px #f3c77c1c}
+.update-state-latest,.update-state-ready{background:#83d5b5;box-shadow:0 0 0 4px #83d5b51c}
+.update-state-error{background:#ff8798;box-shadow:0 0 0 4px #ff87981c}
+.update-status-copy{min-width:0}
+.update-status-copy b{font-size:11px}
+.update-status-copy p{margin:5px 0;color:#b4aebb;font-size:10px;line-height:1.6;overflow-wrap:anywhere}
+.update-status-copy small{color:#8f8998;font-size:9px}
+.update-progress{height:6px;margin:12px 0;border-radius:20px;background:#ffffff12;overflow:hidden}
+.update-progress span{display:block;height:100%;border-radius:20px;background:linear-gradient(90deg,#ff8ca5,#a987f1);transition:width .25s ease}
+.update-actions{display:flex;gap:10px;flex-wrap:wrap}
+.update-actions .button{display:inline-flex;align-items:center;justify-content:center;gap:7px}
+.update-platform-note{margin:12px 0 0}
+.app-footer{gap:8px;flex-wrap:wrap}
