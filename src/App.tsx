@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
-  Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap,
+  Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, videoDuration } from './lib/media';
@@ -14,21 +14,40 @@ type User = {
 type Post = {
   id: string; caption: string; media_url: string; media_type: 'image' | 'video';
   kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
-  comments_count: number; created_at: string; author: User; liked: boolean; is_world_featured?: boolean;
+  comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; is_world_featured?: boolean;
 };
 type Story = { id: string; media_url: string; media_type: 'image' | 'video'; caption: string; author: User; created_at: string };
-type Tab = 'home' | 'reels' | 'explore' | 'profile' | 'notifications' | 'settings' | 'admin';
+type Tab = 'home' | 'reels' | 'explore' | 'messages' | 'profile' | 'notifications' | 'settings' | 'admin';
+type DMMessage = { id: string; conversation_id: string; sender_id: string; content: string; created_at: string };
+type DMConversation = {
+  id: string; status: 'pending' | 'accepted' | 'declined'; requester_id: string;
+  created_at: string; last_message_at: string; otherUser: User;
+  last_message: { content: string; sender_id: string; created_at: string } | null;
+};
 
 const ago = (v: string) => {
   const s = Math.max(0, Math.floor((Date.now() - new Date(v).getTime()) / 1000));
   return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + 'm ago' : s < 86400 ? Math.floor(s / 3600) + 'h ago' : Math.floor(s / 86400) + 'd ago';
 };
-const initial = (value: string) => value.trim().slice(0, 1).toUpperCase() || 'F';
+const initial = (value: string) => value.trim().slice(0, 1).toUpperCase() || 'V';
+const worldRankScore = (post: Post) => {
+  const ageHours = Math.max(0, (Date.now() - new Date(post.created_at).getTime()) / 3600000);
+  return ageHours * 0.25 + post.likes_count * 1.5 + post.comments_count * 2.5 + (post.views_count || 0) * 0.05;
+};
+const rankWorldFeed = (items: Post[]) => [...items].sort((a, b) =>
+  worldRankScore(b) - worldRankScore(a) || new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+);
 
 function Avatar({ user, size = 'md', ring = false }: { user?: Partial<User> | null; size?: 'sm' | 'md' | 'lg' | 'xl'; ring?: boolean }) {
   return <div className={'avatar avatar-' + size + (ring ? ' avatar-ring' : '')}>
     {user?.avatar_url ? <img src={user.avatar_url} alt={user.display_name || user.username || 'Profile'} /> : <span>{initial(user?.display_name || user?.username || 'VYRA')}</span>}
   </div>;
+}
+
+function VerifiedBadge({ size = 'sm' }: { size?: 'sm' | 'md' }) {
+  return <span className={'verified-badge verified-badge-' + size} role="img" aria-label="Verified creator" title="Verified creator">
+    <BadgeCheck size={size === 'md' ? 14 : 11} strokeWidth={2.8} />
+  </span>;
 }
 
 function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
@@ -120,10 +139,10 @@ function PostCard({ post, token, onLike, onComment, onProfile }: { post: Post; t
     return () => { active = false; };
   }, [showComments, post.id, token]);
   return <article className="post-card">
-    <div className="post-head"><button className="post-author" onClick={onProfile}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <BadgeCheck className="verified-icon" size={14} fill="currentColor" />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
+    <div className="post-head"><button className="post-author" onClick={onProfile}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <VerifiedBadge />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
     <div className="post-media">{post.media_type === 'video' ? <video src={post.media_url} controls playsInline preload="metadata" /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
     <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={onLike} aria-label="Like"><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div><button className="action-button" aria-label="Save post"><Bookmark size={20} /></button></div>
-    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations</b><p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
+    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b><p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
     {showComments && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={async e => { e.preventDefault(); if (comment.trim()) { try { await onComment(comment.trim()); const r = await callApi<{ comments: any[] }>('post-comments', { postId: post.id }, token); setComments(r.comments); setComment(''); } catch { /* parent shows an error toast */ } } }}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim()}>Post</button></form></>}
   </article>;
 }
@@ -146,7 +165,8 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
       const duration = file.type.startsWith('video/') ? await videoDuration(file) : 0;
       const category = file.type.startsWith('video/') ? classifyVideo(duration) : 'photo';
       await uploadMedia(file, kind, token, { caption, durationSeconds: duration, category, audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined });
-      setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : 'Post submitted for copyright and community review.');
+      const isVideoPost = kind === 'post' && file.type.startsWith('video/');
+      setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : isVideoPost ? 'Video published instantly to VYRA and today’s World Feed.' : 'Photo submitted for community review.');
       onDone(); window.setTimeout(onClose, 1100);
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Upload failed.'); }
     finally { setBusy(false); }
@@ -160,9 +180,65 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
     {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
     {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
     <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
-    {message && <div className={message.includes('submitted') || message.includes('uploaded') ? 'notice-success' : 'form-error'}>{message}</div>}
-    <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Uploading securely…' : 'Submit for review'} <span>↗</span></button>
+    {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
+    <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
   </div></div>;
+}
+
+
+function ReelsFeed({ posts, onLike, onProfile, onView }: {
+  posts: Post[]; onLike: (post: Post) => void; onProfile: (user: User) => void; onView: (postId: string) => void;
+}) {
+  const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const countedRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const root = scrollerRef.current;
+    if (!root) return;
+    const videos = Array.from(root.querySelectorAll<HTMLVideoElement>('video[data-post-id]'));
+    if (!('IntersectionObserver' in window)) {
+      videos[0]?.play().catch(() => undefined);
+      return;
+    }
+    const observer = new IntersectionObserver(entries => {
+      entries.forEach(entry => {
+        const video = entry.target as HTMLVideoElement;
+        const id = video.dataset.postId || '';
+        if (entry.isIntersecting && entry.intersectionRatio >= 0.65) {
+          video.play().catch(() => undefined);
+          if (id && !countedRef.current.has(id)) {
+            countedRef.current.add(id);
+            onView(id);
+          }
+        } else {
+          video.pause();
+        }
+      });
+    }, { root, threshold: [0.1, 0.65, 0.9] });
+    videos.forEach(video => observer.observe(video));
+    return () => observer.disconnect();
+  }, [posts, onView]);
+
+  if (!posts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
+  return <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
+    {posts.map(post => <article className="reel-screen" key={post.id}>
+      <video data-post-id={post.id} src={post.media_url} autoPlay muted loop playsInline controls preload="metadata" />
+      <div className="reel-shade" />
+      <div className="reel-overlay">
+        <button className="reel-author" onClick={() => onProfile(post.author)}>
+          <Avatar user={post.author} size="sm" />
+          <span>@{post.author.username} {post.author.is_verified && <VerifiedBadge />}</span>
+        </button>
+        {post.caption && <p className="reel-caption">{post.caption}</p>}
+        <div className="reel-stats"><span><Eye size={14} /> {(post.views_count || 0).toLocaleString()} views</span><span><Heart size={14} /> {post.likes_count.toLocaleString()}</span></div>
+      </div>
+      <div className="reel-side-actions">
+        <button className={'reel-like ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label="Like Reel">
+          <Heart size={24} fill={post.liked ? 'currentColor' : 'none'} /><span>{post.likes_count.toLocaleString()}</span>
+        </button>
+        <button onClick={() => onProfile(post.author)} aria-label="Open creator profile"><Avatar user={post.author} size="sm" /></button>
+      </div>
+    </article>)}
+  </div>;
 }
 
 function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
@@ -187,13 +263,148 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
     finally { setBusy(false); }
   }
   return <section className="profile-view"><div className="profile-hero"><div className="profile-avatar-wrap"><Avatar user={profile} size="xl" ring={profile.is_verified} />{own && <label className="avatar-edit"><Plus size={14} /><input type="file" accept="image/*" onChange={e => avatar(e.target.files?.[0])} /></label>}</div>
-    <div className="profile-main"><div className="profile-title"><h2>{profile.username} {profile.is_verified && <BadgeCheck className="verified-icon" fill="currentColor" />}</h2>{own && <button className="button button-soft" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit profile'}</button>}</div>
+    <div className="profile-main"><div className="profile-title"><h2>{profile.username} {profile.is_verified && <VerifiedBadge size="md" />}</h2>{own && <button className="button button-soft" onClick={() => setEditing(!editing)}>{editing ? 'Close' : 'Edit profile'}</button>}</div>
       <div className="profile-stats"><span><b>{profile.posts_count}</b> posts</span><span><b>{profile.follower_count.toLocaleString()}</b> followers</span><span><b>{profile.following_count.toLocaleString()}</b> following</span></div>
       {!editing && <><b>{profile.display_name}</b><p>{profile.bio || 'Creating my own little corner of the internet.'}</p><span className="verified-caption">{profile.is_verified ? 'Verified creator' : 'Creator on the rise'}</span></>}
       {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
       {message && <div className="form-error">{message}</div>}
     </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
     {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span></div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
+  </section>;
+}
+
+
+function DirectMessages({ token, user, target, onClearTarget, onToast }: {
+  token: string; user: User; target: User | null; onClearTarget: () => void; onToast: (message: string) => void;
+}) {
+  const [conversations, setConversations] = useState<DMConversation[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<DMMessage[]>([]);
+  const [composeTarget, setComposeTarget] = useState<User | null>(null);
+  const [composer, setComposer] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const messagesRef = useRef<HTMLDivElement | null>(null);
+
+  const loadInbox = useCallback(async () => {
+    const result = await callApi<{ conversations: DMConversation[] }>('dm-inbox', {}, token);
+    setConversations(result.conversations);
+  }, [token]);
+
+  useEffect(() => {
+    loadInbox().catch(error => onToast(error instanceof Error ? error.message : 'Could not load messages.'))
+      .finally(() => setLoading(false));
+  }, [loadInbox, onToast]);
+
+  useEffect(() => {
+    if (!target) return;
+    setComposeTarget(target);
+    setSelectedId(null);
+    setMessages([]);
+    setComposer('');
+    onClearTarget();
+  }, [target, onClearTarget]);
+
+  useEffect(() => {
+    if (!selectedId) { setMessages([]); return; }
+    let active = true;
+    callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token)
+      .then(result => { if (active) setMessages(result.messages); })
+      .catch(error => { if (active) onToast(error instanceof Error ? error.message : 'Could not load this chat.'); });
+    return () => { active = false; };
+  }, [selectedId, token, onToast]);
+
+  useEffect(() => {
+    if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
+  }, [messages, selectedId]);
+
+  const selected = conversations.find(item => item.id === selectedId) || null;
+  const incoming = conversations.filter(item => item.status === 'pending' && item.requester_id !== user.id);
+  const sent = conversations.filter(item => item.status === 'pending' && item.requester_id === user.id);
+  const chats = conversations.filter(item => item.status === 'accepted');
+
+  async function sendRequest(event: React.FormEvent) {
+    event.preventDefault();
+    if (!composeTarget || !composer.trim()) return;
+    setBusy(true);
+    try {
+      const result = await callApi<{ conversationId: string; status: string }>('dm-start', {
+        username: composeTarget.username, content: composer.trim(),
+      }, token);
+      setComposer('');
+      setComposeTarget(null);
+      await loadInbox();
+      setSelectedId(result.conversationId);
+      onToast(result.status === 'pending' ? 'Message request sent. The chat opens when they accept.' :
+        result.status === 'incoming' ? 'They have already requested to message you. Review the request.' : 'Message sent.');
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Could not send message request.');
+    } finally { setBusy(false); }
+  }
+
+  async function respond(decision: 'accept' | 'decline') {
+    if (!selectedId) return;
+    setBusy(true);
+    try {
+      await callApi('dm-respond', { conversationId: selectedId, decision }, token);
+      await loadInbox();
+      if (decision === 'decline') { setSelectedId(null); setMessages([]); }
+      else {
+        const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
+        setMessages(result.messages);
+      }
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not update this request.'); }
+    finally { setBusy(false); }
+  }
+
+  async function sendMessage(event: React.FormEvent) {
+    event.preventDefault();
+    if (!selectedId || !composer.trim()) return;
+    setBusy(true);
+    try {
+      await callApi('dm-send', { conversationId: selectedId, content: composer.trim() }, token);
+      setComposer('');
+      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
+      setMessages(result.messages);
+      await loadInbox();
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Message could not be sent.'); }
+    finally { setBusy(false); }
+  }
+
+  const conversationButton = (item: DMConversation, label?: string) =>
+    <button key={item.id} className={'dm-list-item ' + (selectedId === item.id ? 'active' : '')} onClick={() => { setComposeTarget(null); setSelectedId(item.id); }}>
+      <Avatar user={item.otherUser} size="md" />
+      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.content || 'Start a conversation'}</small></span>
+      <small className="dm-list-time">{ago(item.last_message_at)}</small>
+    </button>;
+
+  return <section className="content-page dm-page">
+    <div className="page-intro"><p className="eyebrow">ONE-TO-ONE, CREATOR TO CREATOR</p><h2>Your messages.</h2><p>Requests are private. A chat opens only after the recipient accepts.</p></div>
+    <div className="dm-layout">
+      <aside className="dm-inbox">
+        <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => onToast('Could not refresh messages.'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
+        {loading && <p className="dm-empty-note">Loading your inbox…</p>}
+        {incoming.length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.length}</span></h4>{incoming.map(item => conversationButton(item, 'Wants to connect with you'))}</div>}
+        {sent.length > 0 && <div className="dm-group"><h4>SENT REQUESTS</h4>{sent.map(item => conversationButton(item, 'Waiting for their approval'))}</div>}
+        <div className="dm-group"><h4>CHATS</h4>{chats.map(item => conversationButton(item))}</div>
+        {!loading && conversations.length === 0 && <p className="dm-empty-note">No messages yet. Open a creator profile and choose Message to start a request.</p>}
+      </aside>
+
+      <section className="dm-thread">
+        {composeTarget ? <>
+          <div className="dm-thread-head"><Avatar user={composeTarget} size="md" /><div><b>@{composeTarget.username} {composeTarget.is_verified && <VerifiedBadge />}</b><small>New message request</small></div></div>
+          <div className="dm-request-intro"><MessageCircle size={28} /><h3>Start with a message.</h3><p>Your request appears in their inbox. They must accept before the private chat opens.</p></div>
+          <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={16} /> Send request</button></form>
+        </> : selected ? <>
+          <div className="dm-thread-head"><Avatar user={selected.otherUser} size="md" /><div><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'Private chat' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Message request'}</small></div></div>
+          {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
+          <div className="dm-messages" ref={messagesRef}>{messages.map(message => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '')}><div className="dm-bubble"><p>{message.content}</p><small>{ago(message.created_at)}</small></div></div>)}</div>
+          {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}><textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder="Write a message…" /><button className="button button-primary" disabled={busy || !composer.trim()} aria-label="Send message"><Send size={17} /> Send</button></form>
+            : selected.requester_id === user.id ? <p className="dm-closed-note">Your request is waiting for @ {selected.otherUser.username} to accept. You can chat here after approval.</p>
+            : <p className="dm-closed-note">This conversation stays closed until you accept the request.</p>}
+        </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a request or an accepted chat, or visit a creator profile to send the first message.</p></div>}
+      </section>
+    </div>
   </section>;
 }
 
@@ -309,7 +520,9 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [user, setUser] = useState(startUser);
   const [tab, setTab] = useState<Tab>('home');
   const [posts, setPosts] = useState<Post[]>([]);
+  const [worldFeed, setWorldFeed] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
+  const [dmTarget, setDmTarget] = useState<User | null>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [storyOpen, setStoryOpen] = useState<Story | null>(null);
@@ -321,17 +534,36 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [updateReady, setUpdateReady] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const refreshUser = useCallback(async () => { const r = await callApi<{ user: User }>('me', {}, token); setUser(r.user); return r.user; }, [token]);
-  const loadFeed = useCallback(async () => { const r = await callApi<{ posts: Post[]; stories: Story[] }>('feed', {}, token); setPosts(r.posts); setStories(r.stories); }, [token]);
+  const loadFeed = useCallback(async () => {
+    const r = await callApi<{ posts: Post[]; stories: Story[]; worldFeed: Post[] }>('feed', {}, token);
+    setPosts(r.posts); setStories(r.stories); setWorldFeed(r.worldFeed || []);
+  }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
-  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('vyra:update-ready', update); return () => window.removeEventListener('vyra:update-ready', update); }, []);
+  useEffect(() => {
+    const update = () => setUpdateReady(true);
+    window.addEventListener('vyra:update-ready', update);
+    window.addEventListener('vyra:desktop-update-ready', update);
+    return () => {
+      window.removeEventListener('vyra:update-ready', update);
+      window.removeEventListener('vyra:desktop-update-ready', update);
+    };
+  }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   async function like(post: Post) {
-    try { await callApi('like', { postId: post.id }, token); setPosts(items => items.map(p => p.id === post.id ? { ...p, liked: !p.liked, likes_count: Math.max(0, p.likes_count + (p.liked ? -1 : 1)) } : p)); }
-    catch (e) { setToast(e instanceof Error ? e.message : 'Could not like this post.'); }
+    try {
+      await callApi('like', { postId: post.id }, token);
+      setPosts(items => items.map(p => p.id === post.id ? { ...p, liked: !p.liked, likes_count: Math.max(0, p.likes_count + (p.liked ? -1 : 1)) } : p));
+      setWorldFeed(items => rankWorldFeed(items.map(p => p.id === post.id ? { ...p, liked: !p.liked, likes_count: Math.max(0, p.likes_count + (p.liked ? -1 : 1)) } : p)));
+    } catch (e) { setToast(e instanceof Error ? e.message : 'Could not like this post.'); }
   }
   async function comment(post: Post, text: string) {
-    try { await callApi('comment', { postId: post.id, content: text }, token); setPosts(items => items.map(p => p.id === post.id ? { ...p, comments_count: p.comments_count + 1 } : p)); setToast('Comment shared.'); }
+    try {
+      await callApi('comment', { postId: post.id, content: text }, token);
+      setPosts(items => items.map(p => p.id === post.id ? { ...p, comments_count: p.comments_count + 1 } : p));
+      setWorldFeed(items => rankWorldFeed(items.map(p => p.id === post.id ? { ...p, comments_count: p.comments_count + 1 } : p)));
+      setToast('Comment shared.');
+    }
     catch (e) { setToast(e instanceof Error ? e.message : 'Could not post comment.'); }
   }
   async function runSearch() {
@@ -343,37 +575,49 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     try { await callApi('follow', { username: profile.username }, token); setToast('Your community is growing.'); await loadFeed(); await refreshUser(); }
     catch (e) { setToast(e instanceof Error ? e.message : 'Could not follow creator.'); }
   }
-  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? posts.filter(p => p.is_world_featured || p.kind !== 'photo') : posts, [posts, tab]);
+  const recordView = useCallback(async (postId: string) => {
+    try {
+      const result = await callApi<{ views_count: number }>('record-view', { postId }, token);
+      setPosts(items => items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p));
+      setWorldFeed(items => rankWorldFeed(items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p)));
+    } catch { /* A view counter should never interrupt playback. */ }
+  }, [token]);
+  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : posts, [posts, worldFeed, tab]);
   if (loading) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell"><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
     <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
       <button className={tab === 'home' ? 'active' : ''} onClick={() => { setTab('home'); setMobileNav(false); }}><Home /> Home</button>
       <button className={tab === 'reels' ? 'active' : ''} onClick={() => { setTab('reels'); setMobileNav(false); }}><Clapperboard /> Reels</button>
-      <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> Explore</button>
+      <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> World Feed</button>
+      <button className={tab === 'messages' ? 'active' : ''} onClick={() => { setTab('messages'); setMobileNav(false); }}><MessageCircle /> Messages</button>
       <button onClick={() => setUploadOpen(true)}><Plus /> Create <span className="nav-plus">+</span></button>
       <button className={tab === 'notifications' ? 'active' : ''} onClick={() => { setTab('notifications'); setMobileNav(false); }}><Bell /> Notifications</button>
       <button className={tab === 'profile' ? 'active' : ''} onClick={() => { setViewProfile(null); setTab('profile'); setMobileNav(false); }}><UserRound /> Profile</button>
-    </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button>{user.is_admin && <button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button>}<button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span><BadgeCheck size={15} className={user.is_verified ? 'verified-icon' : 'muted-icon'} /></div></div>
+    </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button>{user.is_admin && <button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button>}<button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span>{user.is_verified && <VerifiedBadge />}</div></div>
   </aside>
   {mobileNav && <button className="mobile-shade" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
   <main className="main-column"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileNav(!mobileNav)}><Menu /></button>
-    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'Explore the world' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
+    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'World Feed' : tab === 'messages' ? 'Messages' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
     <div className="topbar-actions"><div className="top-search"><Search size={16} /><input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Find creators" /><button onClick={runSearch}>Search</button></div><button className="create-small" onClick={() => setUploadOpen(true)}><Plus size={17} /> Create</button></div>
   </header>
-  {searchResults.length > 0 && <div className="search-results">{searchResults.map(p => <button key={p.id} onClick={() => { setViewProfile(p); setTab('profile'); setSearchResults([]); }}><Avatar user={p} size="sm" /><b>@{p.username}</b>{p.is_verified && <BadgeCheck size={14} className="verified-icon" />}<span>{p.follower_count.toLocaleString()} followers</span><small>Open profile ↗</small></button>)}</div>}
+  {searchResults.length > 0 && <div className="search-results">{searchResults.map(p => <button key={p.id} onClick={() => { setViewProfile(p); setTab('profile'); setSearchResults([]); }}><Avatar user={p} size="sm" /><b>@{p.username}</b>{p.is_verified && <VerifiedBadge />}<span>{p.follower_count.toLocaleString()} followers</span><small>Open profile ↗</small></button>)}</div>}
   {tab === 'home' && <div className="feed-layout"><div className="feed-column"><StoryRail stories={stories} me={user} onAdd={() => setUploadOpen(true)} onOpen={setStoryOpen} /><div className="feed-heading"><div><p className="eyebrow">A LITTLE INSPIRATION, DAILY</p><h2>Moments worth sharing.</h2></div><span>FEED / 01</span></div>
     {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
   </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={p => { setViewProfile(p); setTab('profile'); }} onFollow={follow} /></div>}
-  {tab === 'reels' && <div className="content-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Videos up to two minutes long, picked from the approved creator community.</p></div>{displayed.length ? <div className="reels-grid">{displayed.map(p => <div className="reel-tile" key={p.id}><video src={p.media_url} controls playsInline /><div><b>@{p.author.username}</b><span><Heart size={13} /> {p.likes_count}</span></div></div>)}</div> : <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Create a Reel</button></div>}</div>}
-  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">OUT THERE, IN THE WORLD</p><h2>Discover your next favorite creator.</h2><p>World spotlights and fresh video moments from the VYRA community.</p></div>{displayed.length ? <div className="explore-grid">{displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />)}</div> : <div className="empty-card"><Compass /><h3>The world feed is warming up.</h3><p>Featured and approved creator posts will appear here.</p></div>}</div>}
-  {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <button className="button button-primary profile-follow" onClick={() => follow(viewProfile)}>Follow @{viewProfile.username}</button>}</div>}
+  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} onLike={like} onProfile={profile => { setViewProfile(profile); setTab('profile'); }} onView={recordView} /></div>}
+  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
+  {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className="button button-primary" onClick={() => follow(viewProfile)}>Follow @{viewProfile.username}</button></div>}</div>}
+  {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
   {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
   <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
-  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('vyra:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
+  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => {
+    if ((window as any).vyraDesktop?.installUpdate) (window as any).vyraDesktop.installUpdate();
+    else window.dispatchEvent(new Event('vyra:apply-update'));
+  }}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
   {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
   </div>;
 }
