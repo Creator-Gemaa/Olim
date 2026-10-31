@@ -27,6 +27,7 @@ The `api` function is deployed and active in Supabase. Source: `supabase/functio
 Set these secrets in Supabase Dashboard → Edge Functions → Secrets:
 - `ADMIN_PANEL_PASSWORD`: choose a new, strong administrator passphrase. `Ctrl+Q` opens the gate. This secret is not stored in Git.
 - `ADMIN_USERNAMES`: optional comma-separated username allowlist for admin access.
+- `PAYMENT_ENCRYPTION_KEY`: required to save creator Razorpay/Stripe credentials. Generate a fresh 32-byte key, base64-encoded (for example, `openssl rand -base64 32`), and save it only as an Edge Function secret.
 - `APP_ORIGINS`: recommended comma-separated list of production origins before public launch.
 
 Do not use a weak numeric PIN or a password previously pasted into a chat as the live admin secret. Use a new random secret and rotate it if it has been exposed.
@@ -40,7 +41,7 @@ Do not use a weak numeric PIN or a password previously pasted into a chat as the
 - Videos up to and including 120 seconds are classified as Reels; longer videos are categorized as Videos.
 - Audio uploads require a rights confirmation. This is a creator audio upload area, not an iTunes/Apple Music catalogue and does not grant music licenses.
 - The admin keyboard shortcut reveals a password gate only. The API validates the configured server secret and checks admin permission for each admin operation. On successful gate entry, the account is marked as an admin for the milestone notification workflow.
-- The database records subscription/provider structures, but payment-key onboarding, live Razorpay/Stripe checkout, signed webhook processing, refunds and subscription lifecycle handling are not enabled. They need merchant-specific configuration and security testing. FameLoop does not currently charge or take a creator revenue share.
+- Creators can submit their own Razorpay Key ID + Key Secret or Stripe secret key. The API encrypts the credential bundle with AES-GCM using the server-only `PAYMENT_ENCRYPTION_KEY`, stores ciphertext in Postgres, and never returns the secret to the browser. Live checkout, signed webhook processing, refunds and subscription lifecycle handling are not implemented yet; do not treat a stored key as a working payment connection. FameLoop does not charge or take a creator revenue share.
 - PWA updates are checked by the service worker and shown as an Update button. Browser/OS installation behavior still applies; this is not an app-store auto-updater or native push-notification service.
 
 ## Before public launch
