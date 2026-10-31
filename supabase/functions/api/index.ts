@@ -29,6 +29,12 @@ function fail(message: string, status = 400, origin = "*") {
 function hex(bytes: Uint8Array) {
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
 }
+function indiaDateKey(value = new Date()) {
+  return new Date(value.getTime() + 330 * 60 * 1000).toISOString().slice(0, 10);
+}
+function indiaDayStartIso() {
+  return new Date(`${indiaDateKey()}T00:00:00+05:30`).toISOString();
+}
 async function digest(value: string) {
   return hex(new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value))));
 }
@@ -110,7 +116,8 @@ async function enrichPosts(rows: any[], viewerId: string) {
   return rows.map((row) => ({
     id: row.id, caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
     kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
-    comments_count: row.comments_count || 0, created_at: row.created_at, is_world_featured: !!row.is_world_featured,
+    comments_count: row.comments_count || 0, views_count: row.views_count || 0,
+    created_at: row.created_at, is_world_featured: !!row.is_world_featured,
     liked: liked.has(row.id), author: safeUser(row.author),
   }));
 }
@@ -231,8 +238,25 @@ Deno.serve(async (req: Request) => {
       const { data: rows, error } = await db.from("posts")
         .select("*,author:profiles!posts_user_id_fkey(*)")
         .eq("status", "approved").order("is_world_featured", { ascending: false })
-        .order("created_at", { ascending: false }).limit(50);
+        .order("created_at", { ascending: false }).limit(60);
       if (error) throw error;
+
+      // The World Feed is a fresh India-time day bucket. Equal scores keep the earliest upload first.
+      const { data: worldRows, error: worldError } = await db.from("posts")
+        .select("*,author:profiles!posts_user_id_fkey(*)")
+        .eq("status", "approved").eq("media_type", "video")
+        .gte("created_at", indiaDayStartIso())
+        .order("created_at", { ascending: true }).limit(500);
+      if (worldError) throw worldError;
+      const rankScore = (post: any) => {
+        const ageHours = Math.max(0, (Date.now() - new Date(post.created_at).getTime()) / 3600000);
+        return ageHours * 0.25 + Number(post.likes_count || 0) * 1.5
+          + Number(post.comments_count || 0) * 2.5 + Number(post.views_count || 0) * 0.05;
+      };
+      const rankedWorldRows = (worldRows || []).sort((a: any, b: any) =>
+        rankScore(b) - rankScore(a) || new Date(a.created_at).getTime() - new Date(b.created_at).getTime()
+      );
+
       const { data: storyRows } = await db.from("stories")
         .select("*,author:profiles!stories_user_id_fkey(*)")
         .eq("status", "approved").gt("expires_at", new Date().toISOString())
@@ -241,7 +265,12 @@ Deno.serve(async (req: Request) => {
         id: story.id, media_url: publicMedia(story.media_path), media_type: story.media_type,
         caption: story.caption, created_at: story.created_at, author: safeUser(story.author),
       }));
-      return response({ posts: await enrichPosts(rows || [], current.profile.id), stories }, 200, origin);
+      return response({
+        posts: await enrichPosts(rows || [], current.profile.id),
+        stories,
+        worldFeed: await enrichPosts(rankedWorldRows, current.profile.id),
+        worldFeedResetsAt: "00:00 Asia/Kolkata",
+      }, 200, origin);
     }
     if (action === "profile-posts") {
       const current = requireUser();
@@ -337,6 +366,198 @@ Deno.serve(async (req: Request) => {
       return response({ notifications: data || [] }, 200, origin);
     }
 
+    if (action === "dm-inbox") {
+      const current = requireUser();
+      const userId = current.profile.id;
+      const [aResult, bResult] = await Promise.all([
+        db.from("dm_conversations").select("*").eq("user_a", userId).order("last_message_at", { ascending: false }).limit(100),
+        db.from("dm_conversations").select("*").eq("user_b", userId).order("last_message_at", { ascending: false }).limit(100),
+      ]);
+      if (aResult.error) throw aResult.error;
+      if (bResult.error) throw bResult.error;
+      const rows = [...(aResult.data || []), ...(bResult.data || [])]
+        .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+      if (!rows.length) return response({ conversations: [] }, 200, origin);
+      const otherIds = [...new Set(rows.map((row: any) => row.user_a === userId ? row.user_b : row.user_a))];
+      const { data: people, error: peopleError } = await db.from("profiles")
+        .select("id,username,display_name,bio,avatar_path,is_verified,follower_count,following_count,posts_count,is_admin")
+        .in("id", otherIds);
+      if (peopleError) throw peopleError;
+      const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
+      const ids = rows.map((row: any) => row.id);
+      const { data: recentMessages, error: recentError } = await db.from("dm_messages")
+        .select("conversation_id,content,sender_id,created_at")
+        .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
+      if (recentError) throw recentError;
+      const latestByConversation = new Map<string, any>();
+      for (const message of recentMessages || []) {
+        if (!latestByConversation.has(message.conversation_id)) latestByConversation.set(message.conversation_id, message);
+      }
+      const conversations = rows.map((row: any) => {
+        const otherId = row.user_a === userId ? row.user_b : row.user_a;
+        return {
+          id: row.id, status: row.status, requester_id: row.requester_id,
+          created_at: row.created_at, last_message_at: row.last_message_at,
+          otherUser: safeUser(peopleById.get(otherId)),
+          last_message: latestByConversation.get(row.id) || null,
+        };
+      }).filter((row: any) => row.otherUser);
+      return response({ conversations }, 200, origin);
+    }
+
+    if (action === "dm-start") {
+      const current = requireUser();
+      const username = String(body.username || "").toLowerCase().trim();
+      const content = String(body.content || "").trim().slice(0, 1000);
+      if (!username || !content) return fail("Choose a creator and write a message first.", 422, origin);
+      const { data: target } = await db.from("profiles").select("id,username").eq("username", username).maybeSingle();
+      if (!target || target.id === current.profile.id) return fail("Creator not found.", 404, origin);
+      const [userA, userB] = [current.profile.id, target.id].sort();
+      const { data: existing, error: lookupError } = await db.from("dm_conversations")
+        .select("*").eq("user_a", userA).eq("user_b", userB).maybeSingle();
+      if (lookupError) throw lookupError;
+      let conversation: any = existing;
+      let isNew = false;
+      if (!conversation) {
+        const { data: created, error: createError } = await db.from("dm_conversations")
+          .insert({ user_a: userA, user_b: userB, requester_id: current.profile.id, status: "pending" })
+          .select("*").single();
+        if (createError && createError.code !== "23505") throw createError;
+        if (created) { conversation = created; isNew = true; }
+        else {
+          const { data: raced, error: racedError } = await db.from("dm_conversations")
+            .select("*").eq("user_a", userA).eq("user_b", userB).maybeSingle();
+          if (racedError || !raced) throw racedError || new Error("Could not create the message request.");
+          conversation = raced;
+        }
+      }
+
+      if (conversation.status === "accepted") {
+        const { error } = await db.from("dm_messages").insert({
+          conversation_id: conversation.id, sender_id: current.profile.id, content,
+        });
+        if (error) throw error;
+        await db.from("notifications").insert({
+          user_id: target.id, actor_id: current.profile.id, type: "message",
+          message: "@" + current.profile.username + " sent you a message.",
+        });
+        return response({ conversationId: conversation.id, status: "accepted" }, 200, origin);
+      }
+
+      if (conversation.status === "pending") {
+        return response({
+          conversationId: conversation.id,
+          status: conversation.requester_id === current.profile.id ? "pending" : "incoming",
+        }, 200, origin);
+      }
+
+      // A declined request may be sent again, subject to a daily anti-spam limit.
+      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+      const { count: requestsToday } = await db.from("dm_conversations")
+        .select("id", { count: "exact", head: true })
+        .eq("requester_id", current.profile.id).gte("created_at", cutoff);
+      if (!isNew && (requestsToday || 0) >= 20) return fail("You've reached today's message-request limit.", 429, origin);
+      const { data: reopened, error: reopenError } = await db.from("dm_conversations")
+        .update({ requester_id: current.profile.id, status: "pending", accepted_at: null })
+        .eq("id", conversation.id).select("*").single();
+      if (reopenError) throw reopenError;
+      conversation = reopened;
+
+      const { error: messageError } = await db.from("dm_messages").insert({
+        conversation_id: conversation.id, sender_id: current.profile.id, content,
+      });
+      if (messageError) throw messageError;
+      await db.from("notifications").insert({
+        user_id: target.id, actor_id: current.profile.id, type: "message_request",
+        message: "@" + current.profile.username + " sent you a message request.",
+      });
+      return response({ conversationId: conversation.id, status: "pending" }, 201, origin);
+    }
+
+    if (action === "dm-respond") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const decision = String(body.decision || "");
+      if (!["accept", "decline"].includes(decision)) return fail("Choose accept or decline.", 422, origin);
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,requester_id,status").eq("id", conversationId).maybeSingle();
+      if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("Message request not found.", 404, origin);
+      }
+      if (conversation.status !== "pending" || conversation.requester_id === current.profile.id) {
+        return fail("Only the recipient can respond to this request.", 403, origin);
+      }
+      const nextStatus = decision === "accept" ? "accepted" : "declined";
+      const { error } = await db.from("dm_conversations")
+        .update({ status: nextStatus, accepted_at: decision === "accept" ? new Date().toISOString() : null })
+        .eq("id", conversationId).eq("status", "pending");
+      if (error) throw error;
+      if (decision === "accept") {
+        const { data: requester } = await db.from("profiles").select("username").eq("id", conversation.requester_id).maybeSingle();
+        await db.from("notifications").insert({
+          user_id: conversation.requester_id, actor_id: current.profile.id, type: "message_accepted",
+          message: "@" + current.profile.username + " accepted your message request.",
+        });
+      }
+      return response({ status: nextStatus }, 200, origin);
+    }
+
+    if (action === "dm-messages") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
+      if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("Conversation not found.", 404, origin);
+      }
+      const { data: messages, error } = await db.from("dm_messages")
+        .select("id,conversation_id,sender_id,content,created_at")
+        .eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(200);
+      if (error) throw error;
+      return response({ messages: messages || [], status: conversation.status }, 200, origin);
+    }
+
+    if (action === "dm-send") {
+      const current = requireUser();
+      const conversationId = String(body.conversationId || "");
+      const content = String(body.content || "").trim().slice(0, 1000);
+      if (!content) return fail("Write a message first.", 422, origin);
+      const { data: conversation } = await db.from("dm_conversations")
+        .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
+      if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("Conversation not found.", 404, origin);
+      }
+      if (conversation.status !== "accepted") return fail("This chat opens after the recipient accepts the request.", 403, origin);
+      const { data: message, error } = await db.from("dm_messages")
+        .insert({ conversation_id: conversationId, sender_id: current.profile.id, content })
+        .select("id,conversation_id,sender_id,content,created_at").single();
+      if (error) throw error;
+      const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
+      await db.from("notifications").insert({
+        user_id: recipientId, actor_id: current.profile.id, type: "message",
+        message: "@" + current.profile.username + " sent you a message.",
+      });
+      return response({ message }, 201, origin);
+    }
+
+    if (action === "record-view") {
+      const current = requireUser();
+      const postId = String(body.postId || "");
+      const { data: post } = await db.from("posts").select("id,user_id").eq("id", postId)
+        .eq("status", "approved").eq("media_type", "video").maybeSingle();
+      if (!post) return fail("Video not found.", 404, origin);
+      if (post.user_id !== current.profile.id) {
+        const { error } = await db.from("post_views").upsert({
+          post_id: postId, viewer_id: current.profile.id, view_day: indiaDateKey(),
+        }, { onConflict: "post_id,viewer_id,view_day", ignoreDuplicates: true });
+        if (error) throw error;
+      }
+      const { data: refreshed, error: refreshError } = await db.from("posts")
+        .select("views_count").eq("id", postId).single();
+      if (refreshError) throw refreshError;
+      return response({ views_count: refreshed.views_count || 0 }, 200, origin);
+    }
+
     if (action === "create-upload") {
       const current = requireUser();
       const purpose = String(body.purpose || "");
@@ -351,7 +572,8 @@ Deno.serve(async (req: Request) => {
       if ((purpose === "story" || purpose === "post") && family === "audio") return fail("Audio files belong in your audio library.", 422, origin);
       if (purpose === "avatar" && family !== "image") return fail("Profile photos must be images.", 422, origin);
       if (purpose === "audio" && family !== "audio") return fail("Choose an MP3 or M4A audio file.", 422, origin);
-      const match = await exactCopyrightMatch(hash);
+      const isAutoPublishedVideo = purpose === "post" && family === "video";
+      const match = isAutoPublishedVideo ? null : await exactCopyrightMatch(hash);
       if (match) return response({ blocked: true, reason: "exact_copyright_hash_match" }, 200, origin);
       const extension = name.includes(".") ? name.split(".").pop() : "bin";
       const path = current.profile.id + "/" + crypto.randomUUID() + "." + extension;
@@ -379,7 +601,8 @@ Deno.serve(async (req: Request) => {
         await db.storage.from("media").remove([path]);
         return fail("The uploaded file fingerprint did not match its actual bytes.", 422, origin);
       }
-      const match = await exactCopyrightMatch(verifiedHash);
+      const isAutoPublishedVideo = purpose === "post" && family === "video";
+      const match = isAutoPublishedVideo ? null : await exactCopyrightMatch(verifiedHash);
       if (match) {
         await db.storage.from("media").remove([path]);
         return fail("This exact file is registered as copyrighted and has been blocked.", 451, origin);
@@ -425,7 +648,10 @@ Deno.serve(async (req: Request) => {
         const { data, error } = await db.from("posts").insert({
           user_id: current.profile.id, caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
-          sha256: hash, status: "pending", copyright_status: "pending_manual_review",
+          sha256: hash,
+          status: family === "video" ? "approved" : "pending",
+          copyright_status: family === "video" ? "not_scanned" : "pending_manual_review",
+          is_world_featured: family === "video",
         }).select("id,kind,status").single();
         if (error) throw error;
         return response({ id: data.id, kind: data.kind, status: data.status }, 201, origin);
