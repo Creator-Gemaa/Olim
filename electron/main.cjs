@@ -3,6 +3,7 @@ const path = require('node:path');
 const { autoUpdater } = require('electron-updater');
 
 let mainWindow = null;
+let downloadedUpdateVersion = null;
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = false;
 
@@ -23,6 +24,7 @@ autoUpdater.on('download-progress', progress => sendUpdateStatus('downloading', 
   percent: Math.round(progress.percent)
 }));
 autoUpdater.on('update-downloaded', info => {
+  downloadedUpdateVersion = info.version;
   sendUpdateStatus('ready', { version: info.version });
   mainWindow?.webContents.send('vyra:desktop-update-ready');
 });
@@ -33,15 +35,22 @@ autoUpdater.on('error', error => {
   mainWindow?.webContents.send('vyra:desktop-update-error', message);
 });
 
-ipcMain.on('vyra:check-for-updates', () => {
+ipcMain.on('vyra:check-for-updates', async () => {
   if (!app.isPackaged || process.platform !== 'win32') {
     sendUpdateStatus('error', { message: 'The Windows updater is available in the installed VYRA desktop app only.' });
     return;
   }
-  autoUpdater.checkForUpdates().catch(error => {
+  if (downloadedUpdateVersion) {
+    sendUpdateStatus('ready', { version: downloadedUpdateVersion });
+    return;
+  }
+  try {
+    await autoUpdater.checkForUpdates();
+    if (downloadedUpdateVersion) sendUpdateStatus('ready', { version: downloadedUpdateVersion });
+  } catch (error) {
     const message = String(error?.message || error);
     sendUpdateStatus('error', { message });
-  });
+  }
 });
 ipcMain.on('vyra:install-update', () => {
   if (app.isPackaged && process.platform === 'win32') autoUpdater.quitAndInstall(false, true);
