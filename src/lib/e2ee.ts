@@ -95,7 +95,7 @@ export async function unlockE2EEIdentity(
     const iv = fromBase64(stored.iv);
     const wrappingKey = await deriveWrappingKey(password, salt);
     const privateBytes = await crypto.subtle.decrypt(
-      { name: "AES-GCM", iv, additionalData: PRIVATE_KEY_AAD(userId) },
+      { name: "AES-GCM", iv: asArrayBuffer(iv), additionalData: asArrayBuffer(PRIVATE_KEY_AAD(userId)) },
       wrappingKey,
       fromBase64(stored.wrappedPrivateKey)
     );
@@ -167,7 +167,7 @@ export async function decryptText(value: string, key: CryptoKey): Promise<string
   const plain = await crypto.subtle.decrypt(
     { name: "AES-GCM", iv: asArrayBuffer(fromBase64(encodedIv)), additionalData: asArrayBuffer(encoder.encode("vyra-message-v1")) },
     key,
-    fromBase64(encodedCipher)
+    asArrayBuffer(fromBase64(encodedCipher))
   );
   return decoder.decode(plain);
 }
