@@ -977,7 +977,7 @@ function AdminPanel({ token, onClose }: { token: string; onClose: () => void }) 
     catch (e) { setMessage(e instanceof Error ? e.message : 'Action failed.'); }
     finally { setBusy(false); }
   }
-  return <section className="admin-view"><div className="admin-top"><div><p className="eyebrow">FAMELOOP CONTROL ROOM</p><h2>Creator operations</h2><p>Moderation, verification and world spotlight.</p></div><button className="button button-soft" onClick={onClose}>Close panel <X size={15} /></button></div>
+  return <section className="admin-view"><div className="admin-top"><div><p className="eyebrow">VYRA CONTROL ROOM</p><h2>Creator operations</h2><p>Moderation, verification and world spotlight.</p></div><button className="button button-soft" onClick={onClose}>Close panel <X size={15} /></button></div>
     {summary && <div className="admin-stats"><div><span>Pending review</span><b>{summary.pendingPosts?.length || 0}</b></div><div><span>Creators</span><b>{summary.userCount || 0}</b></div><div><span>Verified</span><b>{summary.verifiedCount || 0}</b></div></div>}
     {message && <div className="notice-success">{message}</div>}
     <div className="admin-section"><div className="section-title"><h3>Verification desk</h3><span>Grant verified status by exact username</span></div><div className="inline-action"><input value={username} onChange={e => setUsername(e.target.value)} placeholder="Creator username" /><button className="button button-primary" onClick={() => action('admin-verify', { username })} disabled={!username.trim() || busy}>Verify creator</button></div></div>
@@ -1008,7 +1008,7 @@ function RightRail({ user, onCreate, onOpenProfile, onFollow }: { user: User; on
     <div className="fame-card"><div className="fame-card-top"><span>YOUR FAME METER</span><Crown size={17} /></div><div className="fame-score">{user.follower_count.toLocaleString()}<small>followers</small></div><p>Every follow is someone choosing to see more of what you make.</p><div className="fame-line"><i style={{ width: Math.min(100, user.follower_count / 5000) + '%' }} /></div><span className="fame-caption"><Zap size={13} /> Keep creating. Your next milestone is waiting.</span></div>
     <div className="rail-section"><div className="rail-heading"><b>Creators to know</b><span>FOR YOU</span></div>{suggestions.length ? suggestions.slice(0, 5).map(p => <div className="suggestion" key={p.id}><button className="suggestion-profile" onClick={() => onOpenProfile(p)}><Avatar user={p} size="sm" /><span><b>{p.username} {p.is_verified && <VerifiedBadge />}</b><small>{p.follower_count.toLocaleString()} followers</small></span></button><button className="follow-link" onClick={() => onFollow(p)}>Follow</button></div>) : <p className="muted tiny">Creators will show up as the community grows.</p>}</div>
     <div className="rail-create"><div><Sparkles size={18} /><span>Have a moment to share?</span></div><button onClick={onCreate}>Create something <Plus size={15} /></button></div>
-    <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 FAMELOOP</p></div></aside>;
+    <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 VYRA</p></div></aside>;
 }
 
 function SettingsPage({ token, user, onLogout }: { token: string; user: User; onLogout: () => void }) {
@@ -1183,7 +1183,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
   {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
-  <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
+  <footer className="app-footer"><span>VYRA © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} identity={e2eeIdentity} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={() => setCallInfo(null)} onToast={setToast} />}
