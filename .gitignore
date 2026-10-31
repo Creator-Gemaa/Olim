@@ -6,3 +6,10 @@ dist
 coverage
 *.log
 .DS_Store
+
+# Generated native and installer output
+android/
+release/
+electron/icon.png
+electron/icon.ico
+.env.production.local
