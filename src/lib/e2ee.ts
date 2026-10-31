@@ -197,6 +197,24 @@ export async function decryptFile(blob: Blob, iv: string, key: CryptoKey, conver
   return new Blob([plain], { type: mimeType || "application/octet-stream" });
 }
 
+export async function conversationSafetyCode(
+  ownPublicKey: JsonWebKey,
+  peerPublicKey: JsonWebKey,
+  conversationId: string
+): Promise<string> {
+  const canonical = (key: JsonWebKey) => JSON.stringify({
+    kty: key.kty || "",
+    crv: key.crv || "",
+    x: key.x || "",
+    y: key.y || "",
+  });
+  const keys = [canonical(ownPublicKey), canonical(peerPublicKey)].sort();
+  const input = encoder.encode("vyra-safety-code-v1:" + conversationId + ":" + keys.join(":"));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", input));
+  const hex = Array.from(digest).map(value => value.toString(16).padStart(2, "0")).join("");
+  return hex.slice(0, 40).match(/.{1,5}/g)?.join(" ") || hex.slice(0, 40);
+}
+
 export function isEncryptedEnvelope(value: string): boolean {
   return /^vyra1\.[A-Za-z0-9+/]+=*\.[A-Za-z0-9+/]+=*$/.test(value);
 }
