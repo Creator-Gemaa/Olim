@@ -1,48 +1,61 @@
-# FameLoop
+# VYRA
 
-FameLoop is a creator-first social PWA: real fame, real people, and your moment. It includes a Reels-style feed, video posts, 24-hour stories, profiles, follows, likes, comments, creator audio uploads, moderation, verification and an installable web app.
+VYRA is a creator-first social app: make your mark. It includes a responsive web app, an Android APK build and a Windows desktop installer, backed by Supabase.
 
 ## Stack
 - React + TypeScript + Vite
 - Supabase Postgres and Storage
-- Supabase Edge Function API
-- Custom username/password authentication (not Supabase Auth): PBKDF2-SHA-256 password hashes with unique salts and opaque, server-validated sessions
-- Progressive Web App service worker with a user-confirmed update action
+- Custom username/password authentication (not Supabase Auth)
+- Capacitor 8 for Android
+- Electron 45 and NSIS for Windows
 
-## Supabase project
-The migrations in `supabase/migrations` have already been applied to project `wjejsrsrnmhzknhhyjde`. The Storage bucket is named `media`. Browser roles have no direct access to application tables; application database access goes through the private Edge Function.
+## First account and admin access
+The Supabase project currently has no registered user accounts. Register the username **Owner** first to create the founder account. Usernames are case-insensitive, so `Owner` is stored as `owner`. This is the only username that receives admin access. After login, Owner sees the Admin item and can open it directly; there is no second admin password prompt. The database constraint and Edge Function both enforce this rule. Do not share the Owner account password.
+
+## Supabase
+The migrations in `supabase/migrations` have been applied to project `wjejsrsrnmhzknhhyjde`. Media is stored in the `media` bucket. Browser roles have no direct access to application tables; the Edge Function uses the private server key.
 
 ## Run locally
-Requires Node.js 20.19+ and npm.
+Requires Node.js 22 and npm.
 1. Copy `.env.example` to `.env.local`.
-2. Keep the Supabase URL and legacy anon public key from the example (or replace them with the matching project values).
-3. Run `npm install`, then `npm run dev`.
-4. Open the local address printed by Vite.
+2. Run `npm install`.
+3. Run `npm run dev`.
 
-Run quality checks with `npm run test` and `npm run build`.
+The committed `.env.production` contains only the Supabase URL and public anon client key required by VYRA builds. It does not contain the database service-role key.
 
-## Edge Function
-The `api` function is deployed and active in Supabase. Source: `supabase/functions/api/index.ts`. To redeploy after changing it, run `supabase functions deploy api`.
+## Android APK
+Install Android Studio, Android SDK API 36 and JDK 21.
+1. `npm install`
+2. `npm run build`
+3. `npx cap add android` (once)
+4. `npx @capacitor/assets generate --android --iconBackgroundColor "#0B1020" --splashBackgroundColor "#0B1020"`
+5. `npx cap sync android`
+6. `cd android && ./gradlew assembleDebug`
 
-Set these secrets in Supabase Dashboard → Edge Functions → Secrets:
-- `ADMIN_PANEL_PASSWORD`: choose a new, strong administrator passphrase. `Ctrl+Q` opens the gate. This secret is not stored in Git.
-- `ADMIN_USERNAMES`: optional comma-separated username allowlist for admin access.
-- `PAYMENT_ENCRYPTION_KEY`: required to save creator Razorpay/Stripe credentials. Generate a fresh 32-byte key, base64-encoded (for example, `openssl rand -base64 32`), and save it only as an Edge Function secret.
-- `APP_ORIGINS`: recommended comma-separated list of production origins before public launch.
+The downloadable APK is debug-signed for direct installation/testing. It is not a Google Play release-signed package.
 
-Do not use a weak numeric PIN or a password previously pasted into a chat as the live admin secret. Use a new random secret and rotate it if it has been exposed.
+## Windows EXE
+On Windows with Node.js 22:
+1. `npm install`
+2. `npm run build`
+3. `npm run desktop:package`
 
-## Feature boundaries and security notes
-- Signup asks for username, password, confirmation, referral source and date of birth. The API enforces an age minimum of 13. Passwords are stored as salted PBKDF2-SHA-256 hashes; raw passwords are not stored.
-- The browser stores an opaque API session in `sessionStorage`, so it is cleared when the tab session ends. This is still accessible to same-origin JavaScript; use a same-origin backend with HttpOnly, Secure, SameSite cookies and a strong Content Security Policy before a high-risk public launch.
-- Posts are held pending until an administrator reviews them. Only approved posts enter the public feed. Exact SHA-256 matches against the administrator-managed fingerprint table are blocked.
-- Copyright detection is deliberately limited to exact file-hash matching against assets manually entered by administrators. It is **not** a global crawler, perceptual audio/video matching engine, legal determination or an external corpus of hundreds of thousands of videos. Broad matching requires licensed reference material and an appropriately licensed fingerprinting provider.
-- Stories have a 24-hour expiry and require moderation before appearing.
-- Videos up to and including 120 seconds are classified as Reels; longer videos are categorized as Videos.
-- Audio uploads require a rights confirmation. This is a creator audio upload area, not an iTunes/Apple Music catalogue and does not grant music licenses.
-- The admin keyboard shortcut reveals a password gate only. The API validates the configured server secret and checks admin permission for each admin operation. On successful gate entry, the account is marked as an admin for the milestone notification workflow.
-- Creators can submit their own Razorpay Key ID + Key Secret or Stripe secret key. The API encrypts the credential bundle with AES-GCM using the server-only `PAYMENT_ENCRYPTION_KEY`, stores ciphertext in Postgres, and never returns the secret to the browser. Live checkout, signed webhook processing, refunds and subscription lifecycle handling are not implemented yet; do not treat a stored key as a working payment connection. FameLoop does not charge or take a creator revenue share.
-- PWA updates are checked by the service worker and shown as an Update button. Browser/OS installation behavior still applies; this is not an app-store auto-updater or native push-notification service.
+This creates `release/VYRA-Setup.exe`. It is unsigned, so Windows SmartScreen may display an unrecognized-publisher warning. A code-signing certificate is needed to remove that warning.
 
-## Before public launch
-Configure a new admin passphrase and production CORS origins. Add user reporting, block/mute controls, story moderation controls, moderation staffing, privacy/terms/age processes, backups, observability, robust per-IP rate limiting, CSP, same-origin HttpOnly sessions and end-to-end tests. Configure and test payment providers and licensed music separately.
+## Downloads
+The native workflow builds and publishes both installers to [VYRA latest releases](https://github.com/Creator-Gemaa/Olim/releases/tag/vyra-latest):
+- `VYRA-Android.apk`
+- `VYRA-Setup.exe`
+
+## Admin
+Press `Ctrl+Q` while signed in to the Owner account. Only Owner can verify creators, review posts and stories, register exact copyright hashes and feature approved videos in the world feed.
+
+## Feature boundaries
+- Copyright matching is exact SHA-256 comparison against an admin-managed list, not a global crawler or perceptual matching engine.
+- Audio uploads are for creator-owned or licensed music; this is not an iTunes/Apple Music catalog.
+- Payment keys can be stored encrypted, but live checkout, webhooks, refunds and subscription lifecycle handling are not enabled.
+
+## Checks
+- `npm run test`
+- `npm run build`
+- `npm run desktop:package`
