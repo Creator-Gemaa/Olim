@@ -101,6 +101,15 @@ async function auth(req: Request) {
     .select("user_id,expires_at,admin_gate_expires_at")
     .eq("token_hash", tokenHash).maybeSingle();
   if (!session || new Date(session.expires_at).getTime() <= Date.now()) return null;
+  // Rolling 30-day session: active creators stay signed in, while inactive or
+  // stolen tokens still expire instead of becoming permanent credentials.
+  if (new Date(session.expires_at).getTime() <= Date.now() + 14 * 24 * 60 * 60 * 1000) {
+    const refreshedExpiry = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+    const { error: refreshError } = await db.from("app_sessions")
+      .update({ expires_at: refreshedExpiry }).eq("token_hash", tokenHash);
+    if (refreshError) throw refreshError;
+    session.expires_at = refreshedExpiry;
+  }
   const { data: profile } = await db.from("profiles").select("*").eq("id", session.user_id).maybeSingle();
   if (!profile) return null;
   return { tokenHash, session, profile };
@@ -123,7 +132,7 @@ async function enrichPosts(rows: any[], viewerId: string) {
   const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
   const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
   return rows.map((row) => ({
-    id: row.id, caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
+    id: row.id, title: row.title || "", caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
     kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
     comments_count: row.comments_count || 0, views_count: row.views_count || 0,
     created_at: row.created_at, is_world_featured: !!row.is_world_featured,
@@ -912,7 +921,9 @@ Deno.serve(async (req: Request) => {
           if (!ownedTrack) return fail("Choose an audio track from your own library.", 403, origin);
         }
         const { data, error } = await db.from("posts").insert({
-          user_id: current.profile.id, caption: String(body.caption || "").slice(0, 2200), media_path: path,
+          user_id: current.profile.id,
+          title: String(body.title || (family === "video" ? "Video Moment" : "")).trim().slice(0, 160),
+          caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
           sha256: hash,
           status: family === "video" ? "approved" : "pending",
@@ -1071,7 +1082,7 @@ Deno.serve(async (req: Request) => {
       return response({
         userCount: users || 0, verifiedCount: verified || 0,
         pendingPosts: (pending || []).map((post: any) => ({
-          id: post.id, caption: post.caption, media_type: post.media_type, kind: post.kind,
+          id: post.id, title: post.title || "", caption: post.caption, media_type: post.media_type, kind: post.kind,
           media_url: publicMedia(post.media_path), copyright_status: post.copyright_status,
           author: safeUser(post.author),
         })),
@@ -1081,7 +1092,7 @@ Deno.serve(async (req: Request) => {
           author: safeUser(story.author),
         })),
         approvedPosts: (approvedRows || []).map((post: any) => ({
-          id: post.id, caption: post.caption, media_type: post.media_type, kind: post.kind,
+          id: post.id, title: post.title || "", caption: post.caption, media_type: post.media_type, kind: post.kind,
           media_url: publicMedia(post.media_path), is_world_featured: !!post.is_world_featured,
           author: safeUser(post.author),
         })),
