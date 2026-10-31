@@ -170,7 +170,7 @@ function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
         <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
         <p className="auth-subtitle">A space for the things you make, the people who find them, and the moments that stay.</p>
         <div className="auth-mantra"><span>✦</span> Real fame. Real people. Your moment.</div>
-      </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>01 — 04</span></div>
+      </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>BUILT BY GEMAA ✦</span><span>01 — 04</span></div>
     </section>
     <section className="auth-panel"><div className="auth-panel-inner">
       <div className="mobile-brand brand"><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</div>
@@ -1550,7 +1550,10 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       setUpdateState(current => ({ ...current, phase: 'error', message: error instanceof Error ? error.message : 'Could not open the update download.' }));
     }
   }, [updateState.downloadUrl, updateState.releaseUrl]);
-  const installUpdate = useCallback(() => { window.vyraDesktop?.installUpdate(); }, []);
+  const installUpdate = useCallback(() => {
+    if (window.vyraDesktop) window.vyraDesktop.installUpdate();
+    else window.dispatchEvent(new Event('vyra:apply-update'));
+  }, []);
   useEffect(() => {
     try { localStorage.setItem('vyra-sound-enabled', String(soundEnabled)); } catch { /* Storage may be unavailable. */ }
     const root = document.querySelector('.app-shell');
