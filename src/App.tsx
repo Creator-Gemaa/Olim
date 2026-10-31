@@ -340,8 +340,9 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     onClose();
   }
 
+  const shouldConnect = isCaller || callStatus === 'active';
   useEffect(() => {
-    if (callStatus !== 'active' && !isCaller) return;
+    if (!shouldConnect) return;
     if (startedRef.current) return;
     startedRef.current = true;
     let disposed = false;
@@ -391,7 +392,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
       disposed = true;
       cleanup();
     };
-  }, [call.id, callStatus, call.call_type, isCaller, sendSignal, cleanup, onToast]);
+  }, [call.id, shouldConnect, call.call_type, isCaller, sendSignal, cleanup, onToast]);
 
   useEffect(() => {
     let active = true;
@@ -433,7 +434,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     const timer = window.setInterval(() => { void pollSignals(); }, 900);
     void pollSignals();
     return () => { active = false; window.clearInterval(timer); };
-  }, [call.id, token, callStatus, isCaller, sendSignal, cleanup, onClose]);
+  }, [call.id, token, isCaller, sendSignal, cleanup, onClose]);
 
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) remoteVideoRef.current.srcObject = remoteStream;
