@@ -704,11 +704,12 @@ Deno.serve(async (req: Request) => {
       if (staleError) throw staleError;
       const { data: calls, error } = await db.from("dm_call_sessions").select("*")
         .or("caller_id.eq." + current.profile.id + ",callee_id.eq." + current.profile.id)
-        .in("status",["ringing","active"])
         .gte("created_at",new Date(now - 12 * 60 * 60 * 1000).toISOString())
         .order("created_at",{ascending:false}).limit(1);
       if (error) throw error;
-      return response({ call: calls?.[0] || null },200,origin);
+      const latest = calls?.[0] || null;
+      const liveCall = latest && ["ringing","active"].includes(latest.status) ? latest : null;
+      return response({ call: liveCall },200,origin);
     }
 
     if (action === "dm-call-accept") {
