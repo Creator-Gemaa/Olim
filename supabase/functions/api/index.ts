@@ -386,7 +386,7 @@ Deno.serve(async (req: Request) => {
       const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
       const ids = rows.map((row: any) => row.id);
       const { data: recentMessages, error: recentError } = await db.from("dm_messages")
-        .select("conversation_id,content,sender_id,created_at")
+        .select("conversation_id,content,sender_id,message_type,created_at")
         .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
       if (recentError) throw recentError;
       const latestByConversation = new Map<string, any>();
@@ -696,9 +696,16 @@ Deno.serve(async (req: Request) => {
 
     if (action === "dm-call-poll") {
       const current = requireUser();
+      const now = Date.now();
+      const staleRingingCutoff = new Date(now - 90 * 1000).toISOString();
+      const { error: staleError } = await db.from("dm_call_sessions")
+        .update({ status: "missed", ended_at: new Date(now).toISOString() })
+        .eq("status", "ringing").lt("created_at", staleRingingCutoff);
+      if (staleError) throw staleError;
       const { data: calls, error } = await db.from("dm_call_sessions").select("*")
         .or("caller_id.eq." + current.profile.id + ",callee_id.eq." + current.profile.id)
-        .in("status",["ringing","active"]).gte("created_at",new Date(Date.now()-3*60*1000).toISOString())
+        .in("status",["ringing","active"])
+        .gte("created_at",new Date(now - 12 * 60 * 60 * 1000).toISOString())
         .order("created_at",{ascending:false}).limit(1);
       if (error) throw error;
       return response({ call: calls?.[0] || null },200,origin);
