@@ -122,6 +122,9 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [rights, setRights] = useState(false);
+  const [tracks, setTracks] = useState<any[]>([]);
+  const [audioTrackId, setAudioTrackId] = useState('');
+  useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
   async function submit() {
     if (!file) return setMessage('Choose a photo or video first.');
     if (!rights) return setMessage('Please confirm you own or have permission to publish this media.');
@@ -129,7 +132,7 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
     try {
       const duration = file.type.startsWith('video/') ? await videoDuration(file) : 0;
       const category = file.type.startsWith('video/') ? classifyVideo(duration) : 'photo';
-      await uploadMedia(file, kind, token, { caption, durationSeconds: duration, category });
+      await uploadMedia(file, kind, token, { caption, durationSeconds: duration, category, audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined });
       setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : 'Post submitted for copyright and community review.');
       onDone(); window.setTimeout(onClose, 1100);
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Upload failed.'); }
@@ -140,6 +143,8 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
     <div className="segmented"><button className={kind === 'post' ? 'active' : ''} onClick={() => setKind('post')}>Post</button><button className={kind === 'story' ? 'active' : ''} onClick={() => setKind('story')}>24h Story</button></div>
     <label className="file-drop"><ImagePlus size={28} /><b>{file ? file.name : 'Choose your media'}</b><span>Photo or video · up to 100 MB · MP4 supported</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" onChange={e => setFile(e.target.files?.[0] || null)} /></label>
     <label className="modal-label">CAPTION<textarea rows={3} value={caption} onChange={e => setCaption(e.target.value)} placeholder="Give this moment a little context…" maxLength={kind === 'story' ? 500 : 2200} /></label>
+    {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
+    {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
     {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
     <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
     {message && <div className={message.includes('submitted') || message.includes('uploaded') ? 'notice-success' : 'form-error'}>{message}</div>}
@@ -220,6 +225,13 @@ function AdminPanel({ token, onClose }: { token: string; onClose: () => void }) 
         <div className="review-details"><b>@{story.author?.username || 'creator'} · story</b><p>{story.caption || 'No caption'} · {story.copyright_status}</p></div>
         <div className="review-actions"><button onClick={() => action('admin-moderate-story', { storyId: story.id, decision: 'approve' })}>Approve</button><button className="danger-text" onClick={() => action('admin-moderate-story', { storyId: story.id, decision: 'block' })}>Block</button></div>
       </div>) : <p className="microcopy">No stories waiting for review.</p>}
+    </div>
+    <div className="admin-section"><div className="section-title"><h3>World spotlight</h3><span>Only approved creator videos can be featured</span></div>
+      {summary?.approvedPosts?.length ? summary.approvedPosts.map((post: any) => <div className="review-row" key={post.id}>
+        <div className="review-thumb">{post.media_type === 'video' ? <video src={post.media_url} /> : <img src={post.media_url} alt="" />}</div>
+        <div className="review-details"><b>@{post.author?.username || 'creator'} · {post.kind}</b><p>{post.caption || 'No caption'}</p></div>
+        <div className="review-actions"><button onClick={() => action('admin-feature', { postId: post.id, featured: !post.is_world_featured })}>{post.is_world_featured ? 'Remove from world' : 'Feature in world'}</button></div>
+      </div>) : <p className="microcopy">Approved posts will be available for spotlight here.</p>}
     </div></section>;
 }
 
@@ -241,7 +253,24 @@ function SettingsPage({ token, user, onLogout }: { token: string; user: User; on
   const [rights, setRights] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
+  const [provider, setProvider] = useState<'razorpay' | 'stripe'>('razorpay');
+  const [keyId, setKeyId] = useState('');
+  const [keySecret, setKeySecret] = useState('');
+  const [paymentStatus, setPaymentStatus] = useState<any>(null);
+  const [paymentMessage, setPaymentMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
+  useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
+  async function savePaymentKeys() {
+    setBusy(true); setPaymentMessage('');
+    try {
+      const payload = provider === 'razorpay' ? { provider, keyId, keySecret } : { provider, secretKey: keySecret };
+      await callApi('connect-payment', payload, token);
+      setKeyId(''); setKeySecret('');
+      setPaymentStatus({ provider, connected_at: new Date().toISOString() });
+      setPaymentMessage('Your payment credentials are encrypted and stored on the server.');
+    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not save payment credentials.'); }
+    finally { setBusy(false); }
+  }
   async function addTrack() {
     if (!audioFile || !title.trim() || !rights) return setMessage('Choose an audio file, add a title and confirm the rights.');
     setBusy(true); setMessage('');
@@ -260,7 +289,17 @@ function SettingsPage({ token, user, onLogout }: { token: string; user: User; on
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>
-    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>FameLoop takes no creator revenue share. Live Razorpay/Stripe checkout and signed webhook handling still need merchant setup and testing.</p></div></div><div className="payment-note"><ShieldCheck /><span>Payment credentials are never accepted or stored in the browser. Payment integration is not enabled on this project yet.</span></div></div>
+    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Connect your own payment account. FameLoop does not take a platform share.</p></div></div>
+      {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
+      <div className="settings-form">
+        <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
+        {provider === 'razorpay' && <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>}
+        <label>{provider === 'razorpay' ? 'RAZORPAY KEY SECRET' : 'STRIPE SECRET KEY'}<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder={provider === 'razorpay' ? 'Your Razorpay secret' : 'sk_test_… or sk_live_…'} autoComplete="new-password" /></label>
+        <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keySecret || (provider === 'razorpay' && !keyId)}>{busy ? 'Encrypting securely…' : 'Save payment credentials'}</button>
+        {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
+      </div>
+      <div className="payment-note"><ShieldCheck /><span>Credentials are encrypted server-side with AES-GCM and are never returned to the browser. This connects key storage only: live checkout, signed provider webhooks, subscription lifecycle, refunds and payment testing must be implemented before creators can charge subscribers.</span></div>
+    </div>
     <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your FameLoop session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
   </div>;
 }
