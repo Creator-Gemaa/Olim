@@ -147,3 +147,8 @@ jobs:
           overwrite_files: true
           fail_on_unmatched_files: true
           make_latest: true
+
+      - name: Publish the matching version manifest
+        run: |
+          git tag -f vyra-latest "$GITHUB_SHA"
+          git push origin refs/tags/vyra-latest --force
