@@ -408,6 +408,7 @@ Deno.serve(async (req: Request) => {
       if (!constantTimeEqual(String(body.password || ""), password)) return fail("Admin passphrase is incorrect.", 401, origin);
       const expiry = new Date(Date.now() + 15 * 60 * 1000).toISOString();
       await db.from("app_sessions").update({ admin_gate_expires_at: expiry }).eq("token_hash", current.tokenHash);
+      await db.from("profiles").update({ is_admin: true, updated_at: new Date().toISOString() }).eq("id", current.profile.id);
       return response({ ok: true, expiresAt: expiry }, 200, origin);
     }
     if (action === "admin-summary") {
