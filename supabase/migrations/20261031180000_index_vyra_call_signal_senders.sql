@@ -1,0 +1,1 @@
+create index if not exists dm_call_signals_sender_idx on public.dm_call_signals(sender_id);
