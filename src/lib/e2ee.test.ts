@@ -7,6 +7,7 @@ import {
   decryptText,
   encryptFile,
   decryptFile,
+  conversationSafetyCode,
 } from "./e2ee";
 
 describe("VYRA end-to-end encryption", () => {
@@ -51,6 +52,17 @@ describe("VYRA end-to-end encryption", () => {
     );
     await expect(opened.text()).resolves.toBe("private audio payload");
     expect(opened.type).toBe("audio/webm");
+  });
+
+
+  it("shows the same safety code to both participants for the same public keys", async () => {
+    const alice = await createE2EEIdentity("alice-test", "correct horse battery staple");
+    const bob = await createE2EEIdentity("bob-test", "another secure passphrase");
+    const aliceView = await conversationSafetyCode(alice.identity.publicKey, bob.identity.publicKey, "conversation-code");
+    const bobView = await conversationSafetyCode(bob.identity.publicKey, alice.identity.publicKey, "conversation-code");
+    const anotherConversation = await conversationSafetyCode(alice.identity.publicKey, bob.identity.publicKey, "different-conversation");
+    expect(aliceView).toBe(bobView);
+    expect(aliceView).not.toBe(anotherConversation);
   });
 
   it("cannot decrypt a message using a different conversation key", async () => {
