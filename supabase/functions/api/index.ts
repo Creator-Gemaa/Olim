@@ -111,14 +111,23 @@ function publicMedia(path: string | null) {
 async function enrichPosts(rows: any[], viewerId: string) {
   if (!rows?.length) return [];
   const ids = rows.map((row) => row.id);
-  const { data: likes } = await db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids);
-  const liked = new Set((likes || []).map((item: any) => item.post_id));
+  const authorIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
+  const [likesResult, followsResult] = await Promise.all([
+    db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids),
+    authorIds.length
+      ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds)
+      : Promise.resolve({ data: [], error: null }),
+  ]);
+  if (likesResult.error) throw likesResult.error;
+  if (followsResult.error) throw followsResult.error;
+  const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
+  const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
   return rows.map((row) => ({
     id: row.id, caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
     kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
     comments_count: row.comments_count || 0, views_count: row.views_count || 0,
     created_at: row.created_at, is_world_featured: !!row.is_world_featured,
-    liked: liked.has(row.id), author: safeUser(row.author),
+    liked: liked.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
   }));
 }
 async function authRateLimit(req: Request) {
@@ -292,7 +301,16 @@ Deno.serve(async (req: Request) => {
       }
       const { data, error } = await query;
       if (error) throw error;
-      return response({ users: (data || []).map(safeUser) }, 200, origin);
+      const people = data || [];
+      const personIds = people.map((person: any) => person.id);
+      const { data: followRows, error: followError } = personIds.length
+        ? await db.from("follows").select("following_id").eq("follower_id", current.profile.id).in("following_id", personIds)
+        : { data: [], error: null };
+      if (followError) throw followError;
+      const following = new Set((followRows || []).map((item: any) => item.following_id));
+      return response({ users: people.map((person: any) => ({
+        ...safeUser(person), is_following: following.has(person.id),
+      })) }, 200, origin);
     }
     if (action === "update-profile") {
       const current = requireUser();
@@ -800,8 +818,7 @@ Deno.serve(async (req: Request) => {
       if ((purpose === "story" || purpose === "post") && family === "audio") return fail("Audio files belong in your audio library.", 422, origin);
       if (purpose === "avatar" && family !== "image") return fail("Profile photos must be images.", 422, origin);
       if (purpose === "audio" && family !== "audio") return fail("Choose an MP3 or M4A audio file.", 422, origin);
-      const isAutoPublishedVideo = purpose === "post" && family === "video";
-      const match = isAutoPublishedVideo ? null : await exactCopyrightMatch(hash);
+      const match = await exactCopyrightMatch(hash);
       if (match) return response({ blocked: true, reason: "exact_copyright_hash_match" }, 200, origin);
       const extension = name.includes(".") ? name.split(".").pop() : "bin";
       const path = current.profile.id + "/" + crypto.randomUUID() + "." + extension;
@@ -816,6 +833,28 @@ Deno.serve(async (req: Request) => {
       const hash = String(body.sha256 || "").toLowerCase();
       const mime = String(body.mimeType || "");
       const family = mimeFamily(mime);
+      const adminCurated = body.adminCurated === true;
+      let curatedSourceUrl = "";
+      let curatedRightsHolder = "";
+      if (adminCurated) {
+        await requireAdmin();
+        if (purpose !== "post" || family !== "video") return fail("Admin-curated imports must be video posts.", 422, origin);
+        if (String(body.rightsConfirmation || "") !== "I confirm VYRA has written permission or a valid licence to host and distribute this video.") {
+          return fail("Confirm that VYRA has written permission or a valid licence for this video.", 422, origin);
+        }
+        curatedSourceUrl = String(body.sourceUrl || "").trim();
+        curatedRightsHolder = String(body.rightsHolder || "").trim().slice(0, 160);
+        try {
+          const source = new URL(curatedSourceUrl);
+          if (source.protocol !== "https:") throw new Error("https required");
+        } catch {
+          return fail("Enter a valid HTTPS source URL for the rights record.", 422, origin);
+        }
+        if (!curatedRightsHolder) return fail("Enter the creator or rights holder name.", 422, origin);
+      } else if (purpose === "post" && family === "video"
+        && !String(body.rightsConfirmation || "").startsWith("I own or have permission to publish")) {
+        return fail("Confirm that you own this video or have permission to publish it.", 422, origin);
+      }
       if (!path.startsWith(current.profile.id + "/") || !/^[a-f0-9]{64}$/.test(hash)) return fail("Invalid upload reference.", 422, origin);
       if (!(await storageFileExists(path))) return fail("Upload was not found in media storage.", 422, origin);
       const { data: uploadedBlob, error: downloadError } = await db.storage.from("media").download(path);
@@ -829,8 +868,7 @@ Deno.serve(async (req: Request) => {
         await db.storage.from("media").remove([path]);
         return fail("The uploaded file fingerprint did not match its actual bytes.", 422, origin);
       }
-      const isAutoPublishedVideo = purpose === "post" && family === "video";
-      const match = isAutoPublishedVideo ? null : await exactCopyrightMatch(verifiedHash);
+      const match = await exactCopyrightMatch(verifiedHash);
       if (match) {
         await db.storage.from("media").remove([path]);
         return fail("This exact file is registered as copyrighted and has been blocked.", 451, origin);
@@ -882,6 +920,12 @@ Deno.serve(async (req: Request) => {
           is_world_featured: family === "video",
         }).select("id,kind,status").single();
         if (error) throw error;
+        if (adminCurated) {
+          await audit(current.profile.id, "import_rights_cleared_video", data.id, {
+            sourceUrl: curatedSourceUrl, rightsHolder: curatedRightsHolder,
+            rightsConfirmation: "admin_attested_written_permission_or_licence",
+          });
+        }
         return response({ id: data.id, kind: data.kind, status: data.status }, 201, origin);
       }
       return fail("Unknown upload purpose.", 422, origin);
@@ -926,6 +970,92 @@ Deno.serve(async (req: Request) => {
         .eq("user_id", current.profile.id).order("created_at", { ascending: false }).limit(50);
       if (error) throw error;
       return response({ tracks: (data || []).map((track: any) => ({ ...track, media_url: publicMedia(track.media_path) })) }, 200, origin);
+    }
+
+    if (action === "admin-discovery-channels") {
+      const current = await requireAdmin();
+      const { data, error } = await db.from("vyra_content_channels")
+        .select("id,name,search_query,youtube_channel_id,is_active,created_at")
+        .eq("is_active", true).order("created_at", { ascending: false }).limit(40);
+      if (error) throw error;
+      return response({ channels: data || [], adminId: current.profile.id }, 200, origin);
+    }
+    if (action === "admin-discovery-channel-create") {
+      const current = await requireAdmin();
+      const name = String(body.name || "").trim().slice(0, 50);
+      const searchQuery = String(body.searchQuery || "").trim().slice(0, 120);
+      const youtubeChannelId = String(body.youtubeChannelId || "").trim();
+      if (name.length < 3 || searchQuery.length < 2) return fail("Enter a channel name and a search phrase.", 422, origin);
+      if (youtubeChannelId && !/^UC[a-zA-Z0-9_-]{22}$/.test(youtubeChannelId)) {
+        return fail("YouTube channel IDs should start with UC and contain 24 characters.", 422, origin);
+      }
+      const { data, error } = await db.from("vyra_content_channels").insert({
+        name, search_query: searchQuery, youtube_channel_id: youtubeChannelId || null,
+        created_by: current.profile.id,
+      }).select("id,name,search_query,youtube_channel_id,is_active,created_at").single();
+      if (error) return fail(error.code === "23505" ? "A discovery channel already uses that name." : "Could not create discovery channel.", 409, origin);
+      await audit(current.profile.id, "create_content_discovery_channel", data.id, { name, searchQuery, hasChannelFilter: !!youtubeChannelId });
+      return response({ channel: data }, 201, origin);
+    }
+    if (action === "admin-discovery-channel-delete") {
+      const current = await requireAdmin();
+      const channelId = String(body.channelId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(channelId)) return fail("Choose a valid discovery channel.", 422, origin);
+      const { data, error } = await db.from("vyra_content_channels").delete()
+        .eq("id", channelId).select("id,name").maybeSingle();
+      if (error) throw error;
+      if (!data) return fail("Discovery channel not found.", 404, origin);
+      await audit(current.profile.id, "delete_content_discovery_channel", data.id, { name: data.name });
+      return response({ ok: true }, 200, origin);
+    }
+    if (action === "admin-content-discover") {
+      const current = await requireAdmin();
+      const channelId = String(body.channelId || "");
+      const { data: channel, error: channelError } = await db.from("vyra_content_channels")
+        .select("id,name,search_query,youtube_channel_id,is_active")
+        .eq("id", channelId).eq("is_active", true).maybeSingle();
+      if (channelError) throw channelError;
+      if (!channel) return fail("Discovery channel not found or disabled.", 404, origin);
+      const apiKey = Deno.env.get("YOUTUBE_API_KEY") || "";
+      if (!apiKey) return fail("YouTube discovery is not configured yet. Add YOUTUBE_API_KEY to Supabase Edge Function secrets.", 503, origin);
+      const params = new URLSearchParams({
+        part: "snippet", type: "video", q: channel.search_query,
+        maxResults: "10", order: "relevance", safeSearch: "strict",
+        videoEmbeddable: "true", videoDuration: "short",
+        videoLicense: "creativeCommon", key: apiKey,
+      });
+      if (channel.youtube_channel_id) params.set("channelId", channel.youtube_channel_id);
+      const youtubeResponse = await fetch("https://www.googleapis.com/youtube/v3/search?" + params.toString(), {
+        headers: { "Accept": "application/json" },
+      });
+      const youtubeData = await youtubeResponse.json().catch(() => ({}));
+      if (!youtubeResponse.ok) {
+        const reason = youtubeData?.error?.errors?.[0]?.reason || "";
+        const safeMessage = reason === "quotaExceeded"
+          ? "YouTube API quota is used up. Try again after the quota resets."
+          : "YouTube search failed. Check the API key and YouTube Data API v3 access.";
+        return fail(safeMessage, youtubeResponse.status === 403 ? 503 : 502, origin);
+      }
+      const videos = (youtubeData.items || []).flatMap((item: any) => {
+        const videoId = String(item?.id?.videoId || "");
+        if (!/^[a-zA-Z0-9_-]{11}$/.test(videoId)) return [];
+        const snippet = item.snippet || {};
+        return [{
+          videoId, title: String(snippet.title || "").slice(0, 180),
+          description: String(snippet.description || "").slice(0, 240),
+          channelTitle: String(snippet.channelTitle || "").slice(0, 100),
+          channelId: String(snippet.channelId || ""),
+          publishedAt: String(snippet.publishedAt || ""),
+          thumbnailUrl: String(snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || ""),
+          sourceUrl: "https://www.youtube.com/watch?v=" + videoId,
+          platform: "YouTube",
+        }];
+      });
+      await audit(current.profile.id, "scan_youtube_discovery_channel", channel.id, {
+        query: channel.search_query, channelFilter: !!channel.youtube_channel_id, returned: videos.length,
+      });
+      // Results are transient. VYRA stores only the admin-defined channel config and scan audit.
+      return response({ channel, videos, scannedAt: new Date().toISOString(), licenseFilter: "Creative Commons" }, 200, origin);
     }
 
     if (action === "admin-summary") {
