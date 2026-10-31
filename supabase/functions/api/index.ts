@@ -317,6 +317,19 @@ Deno.serve(async (req: Request) => {
       if (post.user_id !== current.profile.id) await db.from("notifications").insert({ user_id: post.user_id, actor_id: current.profile.id, type: "comment", post_id: postId, message: "@" + current.profile.username + " commented on your post." });
       return response({ id: data.id }, 201, origin);
     }
+    if (action === "post-comments") {
+      const current = requireUser();
+      const postId = String(body.postId || "");
+      const { data: post } = await db.from("posts").select("id").eq("id", postId).eq("status", "approved").maybeSingle();
+      if (!post) return fail("Post not found.", 404, origin);
+      const { data, error } = await db.from("comments")
+        .select("id,content,created_at,author:profiles!comments_user_id_fkey(id,username,display_name,is_verified,avatar_path)")
+        .eq("post_id", postId).order("created_at", { ascending: true }).limit(50);
+      if (error) throw error;
+      return response({ comments: (data || []).map((comment: any) => ({
+        id: comment.id, content: comment.content, created_at: comment.created_at, author: safeUser(comment.author),
+      })) }, 200, origin);
+    }
     if (action === "notifications") {
       const current = requireUser();
       const { data, error } = await db.from("notifications").select("*").eq("user_id", current.profile.id).order("created_at", { ascending: false }).limit(50);
