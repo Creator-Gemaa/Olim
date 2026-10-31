@@ -60,8 +60,15 @@ export async function createE2EEIdentity(userId: string, password: string): Prom
     wrappingKey,
     privateBytes
   );
+  const lockedPrivateKey = await crypto.subtle.importKey(
+    "jwk",
+    privateJwk,
+    { name: "ECDH", namedCurve: "P-256" },
+    false,
+    ["deriveBits"]
+  );
   return {
-    identity: { privateKey: pair.privateKey, publicKey },
+    identity: { privateKey: lockedPrivateKey, publicKey },
     stored: {
       publicKey,
       wrappedPrivateKey: toBase64(new Uint8Array(wrapped)),
