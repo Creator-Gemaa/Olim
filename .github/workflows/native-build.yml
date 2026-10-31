@@ -47,6 +47,25 @@ jobs:
         run: npm run build
       - name: Add Android platform
         run: npx cap add android
+      - name: Set Android app version
+        run: |
+          python3 - <<'PY'
+          import json
+          import re
+          from pathlib import Path
+
+          version = json.loads(Path("package.json").read_text())["version"]
+          major, minor, patch = (int(part) for part in version.split("."))
+          version_code = major * 1000000 + minor * 1000 + patch
+          gradle_file = Path("android/app/build.gradle")
+          source = gradle_file.read_text()
+          source, code_count = re.subn(r"(?m)^(\\s*versionCode)\\s+\\d+", rf"\\1 {version_code}", source, count=1)
+          source, name_count = re.subn(r"(?m)^(\\s*versionName)\\s+[\"']([^\"']*)[\"']", lambda match: f'{match.group(1)} "{version}"', source, count=1)
+          if code_count != 1 or name_count != 1:
+              raise SystemExit("Could not set Android versionCode/versionName in android/app/build.gradle")
+          gradle_file.write_text(source)
+          print(f"Android versionName={version}; versionCode={version_code}")
+          PY
       - name: Generate Android icon and splash
         run: npx @capacitor/assets generate --android --iconBackgroundColor "#0B1020" --splashBackgroundColor "#0B1020"
       - name: Sync Android project
@@ -106,14 +125,17 @@ jobs:
         with:
           path: release
           merge-multiple: true
+      - name: Read VYRA app version
+        id: app-version
+        run: echo "value=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
       - name: Create or update latest release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: vyra-latest
-          name: VYRA — Latest installers
+          name: VYRA v${{ steps.app-version.outputs.value }} — Latest installers
           target_commitish: main
           body: |
-            VYRA installers built from the latest main branch.
+            VYRA v${{ steps.app-version.outputs.value }} installers built from the latest main branch.
 
             - Android APK: debug-signed for direct installation/testing; not a Google Play Store release build.
             - Windows EXE: unsigned setup; Windows SmartScreen may warn that the publisher is unrecognized.
