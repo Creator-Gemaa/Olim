@@ -3,9 +3,15 @@ import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
+  Share2, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, videoDuration } from './lib/media';
+import { uploadEncryptedAttachment } from './lib/api';
+import {
+  createE2EEIdentity, unlockE2EEIdentity, deriveConversationKey, encryptText, decryptText,
+  encryptFile, decryptFile, type E2EEIdentity, type StoredE2EEIdentity,
+} from './lib/e2ee';
 
 type User = {
   id: string; username: string; display_name: string; bio: string; avatar_url?: string | null;
@@ -18,11 +24,16 @@ type Post = {
 };
 type Story = { id: string; media_url: string; media_type: 'image' | 'video'; caption: string; author: User; created_at: string };
 type Tab = 'home' | 'reels' | 'explore' | 'messages' | 'profile' | 'notifications' | 'settings' | 'admin';
-type DMMessage = { id: string; conversation_id: string; sender_id: string; content: string; created_at: string };
+type DMMessage = {
+  id: string; conversation_id: string; sender_id: string; content: string; created_at: string;
+  message_type?: 'text' | 'image' | 'voice' | 'shared_post'; media_url?: string | null;
+  attachment_iv?: string | null; attachment_mime?: string | null; e2ee_version?: number;
+  shared_post?: { id: string; caption: string; media_url: string; media_type: 'image' | 'video'; kind: string; author: User } | null;
+};
 type DMConversation = {
   id: string; status: 'pending' | 'accepted' | 'declined'; requester_id: string;
   created_at: string; last_message_at: string; otherUser: User;
-  last_message: { content: string; sender_id: string; created_at: string } | null;
+  last_message: { content: string; sender_id: string; created_at: string; preview?: string } | null;
 };
 
 const ago = (v: string) => {
