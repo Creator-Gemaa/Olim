@@ -7,7 +7,7 @@ import {
   Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
-import { classifyVideo, videoDuration } from './lib/media';
+import { classifyVideo, generateVideoCopy, maxBytesFor, videoDuration } from './lib/media';
 import { uploadEncryptedAttachment } from './lib/api';
 import {
   createE2EEIdentity, unlockE2EEIdentity, deriveConversationKey, encryptText, decryptText,
@@ -19,7 +19,7 @@ type User = {
   is_verified: boolean; follower_count: number; following_count: number; posts_count: number; is_admin?: boolean; is_following?: boolean;
 };
 type Post = {
-  id: string; caption: string; media_url: string; media_type: 'image' | 'video';
+  id: string; title?: string; caption: string; media_url: string; media_type: 'image' | 'video';
   kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
   comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; is_world_featured?: boolean;
 };
@@ -240,13 +240,24 @@ const PostCard = memo(function PostCard({ post, token, onLike, onComment, onProf
     <div className="post-head"><button className="post-author" onClick={() => onProfile(post.author)}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <VerifiedBadge />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
     <div className="post-media">{post.media_type === 'video' ? <VYRAPlayer src={post.media_url} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
     <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div><button className="action-button" aria-label="Save post"><Bookmark size={20} /></button></div>
-    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b><p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
+    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
     {showComments && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
   </article>;
 });
 
+type BulkVideoItem = {
+  id: string;
+  file: File;
+  title: string;
+  description: string;
+  durationSeconds: number;
+  status: 'preparing' | 'ready' | 'uploading' | 'published' | 'failed' | 'invalid';
+  error?: string;
+};
+
 function UploadModal({ token, onClose, onDone }: { token: string; onClose: () => void; onDone: () => void }) {
   const [kind, setKind] = useState<'post' | 'story'>('post');
+  const [bulkMode, setBulkMode] = useState(false);
   const [file, setFile] = useState<File | null>(null);
   const [caption, setCaption] = useState('');
   const [busy, setBusy] = useState(false);
@@ -254,35 +265,165 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
   const [rights, setRights] = useState(false);
   const [tracks, setTracks] = useState<any[]>([]);
   const [audioTrackId, setAudioTrackId] = useState('');
+  const [bulkVideos, setBulkVideos] = useState<BulkVideoItem[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
-  async function submit() {
+
+  function patchBulkVideo(id: string, patch: Partial<BulkVideoItem>) {
+    setBulkVideos(current => current.map(item => item.id === id ? { ...item, ...patch } : item));
+  }
+
+  async function addBulkFiles(files: FileList | null) {
+    if (!files?.length) return;
+    const selected = Array.from(files);
+    const items: BulkVideoItem[] = selected.map(selectedFile => ({
+      id: crypto.randomUUID(),
+      file: selectedFile,
+      ...generateVideoCopy(selectedFile),
+      durationSeconds: 0,
+      status: 'preparing',
+    }));
+    setBulkVideos(current => [...current, ...items]);
+    setMessage('');
+    // Read one video's browser metadata at a time. This keeps large selections
+    // from spawning hundreds of decoders/object URLs at the same moment.
+    for (const item of items) {
+      if (item.file.type !== 'video/mp4' && item.file.type !== 'video/webm') {
+        patchBulkVideo(item.id, { status: 'invalid', error: 'Use an MP4 or WebM video.' });
+        continue;
+      }
+      if (item.file.size <= 0 || item.file.size > maxBytesFor(item.file.type)) {
+        patchBulkVideo(item.id, { status: 'invalid', error: 'This file is empty or larger than 50 MB.' });
+        continue;
+      }
+      try {
+        const durationSeconds = await videoDuration(item.file);
+        const copy = generateVideoCopy(item.file, durationSeconds);
+        patchBulkVideo(item.id, { ...copy, durationSeconds, status: 'ready', error: undefined });
+      } catch {
+        patchBulkVideo(item.id, { status: 'invalid', error: 'VYRA could not read this video’s duration. Try exporting it as MP4 or WebM.' });
+      }
+    }
+  }
+
+  async function submitBulk() {
+    if (!rights) { setMessage('Confirm you own these videos or have permission to publish them.'); return; }
+    const queue = bulkVideos.filter(item => item.status === 'ready' || item.status === 'failed');
+    if (!queue.length) { setMessage('Choose at least one ready video to publish.'); return; }
+    setBulkBusy(true);
+    setMessage('');
+    setBulkProgress({ done: 0, total: queue.length });
+    let published = 0;
+    let failed = 0;
+    for (let index = 0; index < queue.length; index++) {
+      const item = queue[index];
+      patchBulkVideo(item.id, { status: 'uploading', error: undefined });
+      try {
+        await uploadMedia(item.file, 'post', token, {
+          title: item.title.trim() || generateVideoCopy(item.file, item.durationSeconds).title,
+          caption: item.description.trim().slice(0, 2200),
+          durationSeconds: item.durationSeconds,
+          category: classifyVideo(item.durationSeconds),
+          rightsConfirmation: 'I own or have permission to publish this media.',
+        });
+        patchBulkVideo(item.id, { status: 'published', error: undefined });
+        published++;
+      } catch (error) {
+        patchBulkVideo(item.id, {
+          status: 'failed',
+          error: error instanceof Error ? error.message : 'Upload failed. You can retry this video.',
+        });
+        failed++;
+      }
+      setBulkProgress({ done: index + 1, total: queue.length });
+    }
+    setBulkBusy(false);
+    setMessage(
+      failed
+        ? published + ' video(s) published. ' + failed + ' failed; fix the issue or retry those files.'
+        : published + ' video(s) published successfully to VYRA.'
+    );
+    if (published > 0) onDone();
+  }
+
+  async function submitSingle() {
     if (!file) return setMessage('Choose a photo or video first.');
     if (!rights) return setMessage('Please confirm you own or have permission to publish this media.');
     setBusy(true); setMessage('');
     try {
       const duration = file.type.startsWith('video/') ? await videoDuration(file) : 0;
       const category = file.type.startsWith('video/') ? classifyVideo(duration) : 'photo';
-      await uploadMedia(file, kind, token, { caption, durationSeconds: duration, category, rightsConfirmation: 'I own or have permission to publish this media.', audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined });
+      await uploadMedia(file, kind, token, {
+        caption, durationSeconds: duration, category,
+        rightsConfirmation: 'I own or have permission to publish this media.',
+        audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined,
+      });
       const isVideoPost = kind === 'post' && file.type.startsWith('video/');
       setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : isVideoPost ? 'Video published instantly to VYRA and today’s World Feed.' : 'Photo submitted for community review.');
       onDone(); window.setTimeout(onClose, 1100);
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Upload failed.'); }
     finally { setBusy(false); }
   }
-  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && onClose()}><div className="modal-card">
-    <div className="modal-top"><div><p className="eyebrow">MAKE SOMETHING MATTER</p><h2>Create a moment</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
-    <div className="segmented"><button className={kind === 'post' ? 'active' : ''} onClick={() => setKind('post')}>Post</button><button className={kind === 'story' ? 'active' : ''} onClick={() => setKind('story')}>24h Story</button></div>
-    <label className="file-drop"><ImagePlus size={28} /><b>{file ? file.name : 'Choose your media'}</b><span>Photo or video · up to 100 MB · MP4 supported</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" onChange={e => setFile(e.target.files?.[0] || null)} /></label>
-    <label className="modal-label">CAPTION<textarea rows={3} value={caption} onChange={e => setCaption(e.target.value)} placeholder="Give this moment a little context…" maxLength={kind === 'story' ? 500 : 2200} /></label>
-    {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
-    {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
-    {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
-    <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
-    {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
-    <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
-  </div></div>;
-}
 
+  const pendingCount = bulkVideos.filter(item => item.status === 'ready' || item.status === 'failed').length;
+  const statusText = (status: BulkVideoItem['status']) => ({
+    preparing: 'Preparing',
+    ready: 'Ready',
+    uploading: 'Uploading',
+    published: 'Published',
+    failed: 'Failed · retry available',
+    invalid: 'Needs attention',
+  }[status]);
+
+  return <div className="modal-backdrop" onMouseDown={e => e.target === e.currentTarget && !bulkBusy && !busy && onClose()}>
+    <div className="modal-card upload-modal-card">
+      <div className="modal-top"><div><p className="eyebrow">MAKE SOMETHING MATTER</p><h2>Create a moment</h2></div><button className="icon-button" onClick={onClose} disabled={bulkBusy || busy}><X /></button></div>
+      <div className="segmented upload-mode-tabs">
+        <button className={kind === 'post' && !bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(false); }}>Single post</button>
+        <button className={kind === 'post' && bulkMode ? 'active' : ''} onClick={() => { setKind('post'); setBulkMode(true); }}>Bulk videos</button>
+        <button className={kind === 'story' ? 'active' : ''} onClick={() => { setKind('story'); setBulkMode(false); }}>24h Story</button>
+      </div>
+
+      {bulkMode ? <>
+        <div className="bulk-intro"><b>Publish a whole video batch</b><span>Select multiple MP4 or WebM files in one go. VYRA prepares a title and description for every clip.</span></div>
+        <label className="file-drop bulk-file-drop"><ImagePlus size={27} /><b>Select multiple videos</b><span>Choose many files together · up to 50 MB per video</span><input type="file" accept="video/mp4,video/webm" multiple disabled={bulkBusy} onChange={event => { void addBulkFiles(event.target.files); event.currentTarget.value = ''; }} /></label>
+        {bulkVideos.length > 0 && <div className="bulk-queue">
+          <div className="bulk-queue-heading"><b>Upload queue · {bulkVideos.length} video(s)</b><button type="button" className="text-button" onClick={() => setBulkVideos([])} disabled={bulkBusy}>Clear queue</button></div>
+          {bulkVideos.map(item => <article className={'bulk-video-item bulk-' + item.status} key={item.id}>
+            <div className="bulk-video-heading">
+              <div><b title={item.file.name}>{item.file.name}</b><small>{(item.file.size / (1024 * 1024)).toFixed(1)} MB{item.durationSeconds ? ' · ' + Math.round(item.durationSeconds) + ' sec' : ''}</small></div>
+              <span className={'bulk-status bulk-status-' + item.status}>{statusText(item.status)}</span>
+              <button type="button" className="icon-button" aria-label={'Remove ' + item.file.name} disabled={bulkBusy} onClick={() => setBulkVideos(current => current.filter(video => video.id !== item.id))}><X size={15} /></button>
+            </div>
+            {item.status !== 'invalid' && <div className="bulk-copy-fields">
+              <label>VYRA TITLE<input maxLength={160} value={item.title} disabled={bulkBusy || item.status === 'published'} onChange={event => patchBulkVideo(item.id, { title: event.target.value })} /></label>
+              <label>VYRA DESCRIPTION<textarea rows={2} maxLength={2200} value={item.description} disabled={bulkBusy || item.status === 'published'} onChange={event => patchBulkVideo(item.id, { description: event.target.value })} /></label>
+            </div>}
+            {item.error && <p className="bulk-video-error">{item.error}</p>}
+          </article>)}
+        </div>}
+        {bulkBusy && <div className="bulk-progress"><div><b>Publishing videos</b><span>{bulkProgress.done} / {bulkProgress.total}</span></div><i><span style={{ width: bulkProgress.total ? (bulkProgress.done / bulkProgress.total * 100) + '%' : '0%' }} /></i></div>}
+        <p className="microcopy bulk-generator-note">VYRA creates starter copy from each filename and video duration. It does not watch or understand the clip; edit the generated title and description to describe what happens in your video. No external AI service is used.</p>
+        <label className="check-line"><input type="checkbox" checked={rights} disabled={bulkBusy} onChange={e => setRights(e.target.checked)} /> I own these videos or have permission to publish all selected content, including audio.</label>
+        {message && <div className={message.includes('published successfully') || message.includes('video(s) published') ? 'notice-success' : 'form-error'}>{message}</div>}
+        <button className="button button-primary button-wide" onClick={submitBulk} disabled={bulkBusy || busy || !rights || !pendingCount}>
+          {bulkBusy ? 'Publishing ' + bulkProgress.done + ' / ' + bulkProgress.total + '…' : 'Publish ' + pendingCount + ' queued video(s)'}
+          <span>↗</span>
+        </button>
+      </> : <>
+        <label className="file-drop"><ImagePlus size={28} /><b>{file ? file.name : 'Choose your media'}</b><span>Photo or video · up to 50 MB per file · MP4 supported</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" onChange={e => setFile(e.target.files?.[0] || null)} /></label>
+        <label className="modal-label">CAPTION<textarea rows={3} value={caption} onChange={e => setCaption(e.target.value)} placeholder="Give this moment a little context…" maxLength={kind === 'story' ? 500 : 2200} /></label>
+        {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
+        {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
+        {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
+        <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
+        {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
+        <button className="button button-primary button-wide" onClick={submitSingle} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
+      </>}
+    </div>
+  </div>;
+}
 
 
 function ShortCommentsSheet({ post, token, onClose, onComment }: {
@@ -626,6 +767,7 @@ function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare, token
             <Avatar user={post.author} size="sm" />
             <span>@{post.author.username} {post.author.is_verified && <VerifiedBadge />}</span>
           </button>
+          {post.title && <b className="reel-title">{post.title}</b>}
           {post.caption && <p className="reel-caption">{post.caption}</p>}
           <div className="reel-stats"><span><Eye size={14} /> {(post.views_count || 0).toLocaleString()} views</span><span><Heart size={14} /> {post.likes_count.toLocaleString()}</span></div>
         </div>
