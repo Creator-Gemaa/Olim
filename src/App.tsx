@@ -27,7 +27,7 @@ const initial = (value: string) => value.trim().slice(0, 1).toUpperCase() || 'F'
 
 function Avatar({ user, size = 'md', ring = false }: { user?: Partial<User> | null; size?: 'sm' | 'md' | 'lg' | 'xl'; ring?: boolean }) {
   return <div className={'avatar avatar-' + size + (ring ? ' avatar-ring' : '')}>
-    {user?.avatar_url ? <img src={user.avatar_url} alt={user.display_name || user.username || 'Profile'} /> : <span>{initial(user?.display_name || user?.username || 'FameLoop')}</span>}
+    {user?.avatar_url ? <img src={user.avatar_url} alt={user.display_name || user.username || 'Profile'} /> : <span>{initial(user?.display_name || user?.username || 'VYRA')}</span>}
   </div>;
 }
 
@@ -63,29 +63,30 @@ function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
   }
   return <main className="auth-shell">
     <section className="auth-art"><div className="auth-orbit orbit-one" /><div className="auth-orbit orbit-two" />
-      <div className="auth-art-copy"><div className="brand brand-light"><span className="brand-mark"><Sparkles size={19} /></span> fameloop</div>
-        <p className="eyebrow">YOUR STAGE IS WAITING</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
-        <p className="auth-subtitle">A place where creators become the story. Not the balance in your bank account.</p>
+      <div className="auth-art-copy"><div className="brand brand-light"><span className="brand-mark"><Sparkles size={19} /></span> VYRA</div>
+        <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
+        <p className="auth-subtitle">A space for the things you make, the people who find them, and the moments that stay.</p>
         <div className="auth-mantra"><span>✦</span> Real fame. Real people. Your moment.</div>
       </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>01 — 04</span></div>
     </section>
     <section className="auth-panel"><div className="auth-panel-inner">
-      <div className="mobile-brand brand"><span className="brand-mark"><Sparkles size={19} /></span> fameloop</div>
+      <div className="mobile-brand brand"><span className="brand-mark"><Sparkles size={19} /></span> VYRA</div>
       <div className="auth-head"><div className="step-kicker">{mode === 'signup' ? 'YOUR JOURNEY STARTS HERE' : 'WELCOME BACK'}</div>
         <h2>{mode === 'login' ? 'Good to see you.' : step === 1 ? 'Create your account.' : step === 2 ? 'One quick question.' : 'When is your birthday?'}</h2>
-        <p>{mode === 'login' ? 'Pick up where your creativity left off.' : step === 1 ? 'Claim your corner of the internet.' : step === 2 ? 'How did FameLoop find its way to you?' : 'We use this to personalize your experience.'}</p>
+        <p>{mode === 'login' ? 'Pick up where your creativity left off.' : step === 1 ? 'Claim your corner of the internet.' : step === 2 ? 'How did VYRA find its way to you?' : 'We use this to personalize your experience.'}</p>
       </div>
       {mode === 'signup' && <div className="step-progress"><span className="active" /><span className={step >= 2 ? 'active' : ''} /><span className={step >= 3 ? 'active' : ''} /></div>}
       {mode === 'signup' && step === 1 && <div className="form-stack fade-in">
         <label>USERNAME<input value={username} onChange={e => setUsername(e.target.value)} placeholder="yourcreativehandle" autoComplete="username" maxLength={24} /></label>
         <label>PASSWORD<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 10 characters" autoComplete="new-password" /></label>
         <label>CONFIRM PASSWORD<input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Type it one more time" autoComplete="new-password" /></label>
+        <p className="microcopy owner-hint">The reserved username <b>Owner</b> creates the founder account and opens the admin panel directly after login.</p>
       </div>}
       {mode === 'signup' && step === 2 && <div className="choice-grid fade-in">{['Google', 'Friends', 'AI', 'Other'].map((item, i) => <button key={item} className={'choice-card ' + (heard === item ? 'selected' : '')} onClick={() => setHeard(item)}><span>{['◉', '◎', '✧', '↗'][i]}</span><b>{item}</b>{heard === item && <Check size={16} />}</button>)}</div>}
       {mode === 'signup' && step === 3 && <div className="form-stack fade-in"><label>DATE OF BIRTH<input type="date" value={birth} onChange={e => setBirth(e.target.value)} max={new Date().toISOString().slice(0, 10)} /></label><div className="privacy-note"><ShieldCheck size={17} /> Your birth date is private and never shown on your public profile.</div></div>}
       {mode === 'login' && <div className="form-stack fade-in"><label>USERNAME<input value={username} onChange={e => setUsername(e.target.value)} placeholder="yourcreativehandle" autoComplete="username" /></label><label>PASSWORD<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Your password" autoComplete="current-password" onKeyDown={e => e.key === 'Enter' && submit()} /></label></div>}
       {error && <div className="form-error">{error}</div>}
-      <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Setting things up…' : mode === 'login' ? 'Enter FameLoop' : step === 3 ? 'Start your journey' : 'Continue'} <span>↗</span></button>
+      <button className="button button-primary button-wide" onClick={submit} disabled={busy}>{busy ? 'Setting things up…' : mode === 'login' ? 'Enter VYRA' : step === 3 ? 'Start your journey' : 'Continue'} <span>↗</span></button>
       {mode === 'signup' && step > 1 && <button className="text-button" onClick={() => setStep(step - 1)}>← Back</button>}
       <div className="auth-switch">{mode === 'signup' ? 'Already have a space here?' : 'New around here?'} <button onClick={() => switchMode(mode === 'signup' ? 'login' : 'signup')}>{mode === 'signup' ? 'Log in' : 'Create account'}</button></div>
       <p className="auth-legal">By continuing, you agree to keep this community creative, kind and respectful.</p>
@@ -203,26 +204,14 @@ function AdminPanel({ token, onClose }: { token: string; onClose: () => void }) 
   const [holder, setHolder] = useState('');
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [password, setPassword] = useState('');
-  const [gateOpen, setGateOpen] = useState(true);
-  const [gateOk, setGateOk] = useState(false);
   const load = useCallback(() => callApi('admin-summary', {}, token).then(setSummary).catch(e => setMessage(e.message)), [token]);
-  useEffect(() => { if (gateOk) load(); }, [gateOk, load]);
-  async function enter() {
-    setBusy(true);
-    try { await callApi('admin-gate', { password }, token); setGateOk(true); setGateOpen(false); setMessage(''); }
-    catch (e) { setMessage(e instanceof Error ? e.message : 'Admin access denied.'); }
-    finally { setBusy(false); }
-  }
+  useEffect(() => { load(); }, [load]);
   async function action(actionName: string, payload: Record<string, unknown>) {
     setBusy(true); setMessage('');
     try { await callApi(actionName, payload, token); await load(); setMessage('Saved.'); }
     catch (e) { setMessage(e instanceof Error ? e.message : 'Action failed.'); }
     finally { setBusy(false); }
   }
-  if (gateOpen) return <div className="modal-backdrop"><div className="modal-card admin-gate"><div className="modal-top"><div><p className="eyebrow">RESTRICTED AREA</p><h2>Admin access</h2></div><button className="icon-button" onClick={onClose}><X /></button></div>
-    <p className="muted">Enter the administrator passphrase configured in Supabase Edge Function secrets.</p><input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Admin passphrase" onKeyDown={e => e.key === 'Enter' && enter()} />
-    {message && <div className="form-error">{message}</div>}<button className="button button-primary button-wide" onClick={enter} disabled={busy}>Unlock admin panel</button></div></div>;
   return <section className="admin-view"><div className="admin-top"><div><p className="eyebrow">FAMELOOP CONTROL ROOM</p><h2>Creator operations</h2><p>Moderation, verification and world spotlight.</p></div><button className="button button-soft" onClick={onClose}>Close panel <X size={15} /></button></div>
     {summary && <div className="admin-stats"><div><span>Pending review</span><b>{summary.pendingPosts?.length || 0}</b></div><div><span>Creators</span><b>{summary.userCount || 0}</b></div><div><span>Verified</span><b>{summary.verifiedCount || 0}</b></div></div>}
     {message && <div className="notice-success">{message}</div>}
@@ -301,7 +290,7 @@ function SettingsPage({ token, user, onLogout }: { token: string; user: User; on
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>
-    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Connect your own payment account. FameLoop does not take a platform share.</p></div></div>
+    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Connect your own payment account. VYRA does not take a platform share.</p></div></div>
       {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
       <div className="settings-form">
         <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
@@ -312,7 +301,7 @@ function SettingsPage({ token, user, onLogout }: { token: string; user: User; on
       </div>
       <div className="payment-note"><ShieldCheck /><span>Credentials are encrypted server-side with AES-GCM and are never returned to the browser. This connects key storage only: live checkout, signed provider webhooks, subscription lifecycle, refunds and payment testing must be implemented before creators can charge subscribers.</span></div>
     </div>
-    <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your FameLoop session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+    <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
   </div>;
 }
 
@@ -334,8 +323,8 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const refreshUser = useCallback(async () => { const r = await callApi<{ user: User }>('me', {}, token); setUser(r.user); return r.user; }, [token]);
   const loadFeed = useCallback(async () => { const r = await callApi<{ posts: Post[]; stories: Story[] }>('feed', {}, token); setPosts(r.posts); setStories(r.stories); }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
-  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('fameloop:update-ready', update); return () => window.removeEventListener('fameloop:update-ready', update); }, []);
-  useEffect(() => { const handler = (e: KeyboardEvent) => { if (e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, []);
+  useEffect(() => { const update = () => setUpdateReady(true); window.addEventListener('VYRA:update-ready', update); return () => window.removeEventListener('VYRA:update-ready', update); }, []);
+  useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   async function like(post: Post) {
     try { await callApi('like', { postId: post.id }, token); setPosts(items => items.map(p => p.id === post.id ? { ...p, liked: !p.liked, likes_count: Math.max(0, p.likes_count + (p.liked ? -1 : 1)) } : p)); }
@@ -357,14 +346,14 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? posts.filter(p => p.is_world_featured || p.kind !== 'photo') : posts, [posts, tab]);
   if (loading) return <div className="loading-screen"><div className="loading-mark"><Sparkles /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell"><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
-    <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><Sparkles size={19} /></span> fameloop</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
+    <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><Sparkles size={19} /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
       <button className={tab === 'home' ? 'active' : ''} onClick={() => { setTab('home'); setMobileNav(false); }}><Home /> Home</button>
       <button className={tab === 'reels' ? 'active' : ''} onClick={() => { setTab('reels'); setMobileNav(false); }}><Clapperboard /> Reels</button>
       <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> Explore</button>
       <button onClick={() => setUploadOpen(true)}><Plus /> Create <span className="nav-plus">+</span></button>
       <button className={tab === 'notifications' ? 'active' : ''} onClick={() => { setTab('notifications'); setMobileNav(false); }}><Bell /> Notifications</button>
       <button className={tab === 'profile' ? 'active' : ''} onClick={() => { setViewProfile(null); setTab('profile'); setMobileNav(false); }}><UserRound /> Profile</button>
-    </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button><button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button><button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span><BadgeCheck size={15} className={user.is_verified ? 'verified-icon' : 'muted-icon'} /></div></div>
+    </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button>{user.is_admin && <button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button>}<button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span><BadgeCheck size={15} className={user.is_verified ? 'verified-icon' : 'muted-icon'} /></div></div>
   </aside>
   {mobileNav && <button className="mobile-shade" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
   <main className="main-column"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileNav(!mobileNav)}><Menu /></button>
@@ -376,15 +365,15 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
   </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={p => { setViewProfile(p); setTab('profile'); }} onFollow={follow} /></div>}
   {tab === 'reels' && <div className="content-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Videos up to two minutes long, picked from the approved creator community.</p></div>{displayed.length ? <div className="reels-grid">{displayed.map(p => <div className="reel-tile" key={p.id}><video src={p.media_url} controls playsInline /><div><b>@{p.author.username}</b><span><Heart size={13} /> {p.likes_count}</span></div></div>)}</div> : <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Create a Reel</button></div>}</div>}
-  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">OUT THERE, IN THE WORLD</p><h2>Discover your next favorite creator.</h2><p>World spotlights and fresh video moments from the FameLoop community.</p></div>{displayed.length ? <div className="explore-grid">{displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />)}</div> : <div className="empty-card"><Compass /><h3>The world feed is warming up.</h3><p>Featured and approved creator posts will appear here.</p></div>}</div>}
+  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">OUT THERE, IN THE WORLD</p><h2>Discover your next favorite creator.</h2><p>World spotlights and fresh video moments from the VYRA community.</p></div>{displayed.length ? <div className="explore-grid">{displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} />)}</div> : <div className="empty-card"><Compass /><h3>The world feed is warming up.</h3><p>Featured and approved creator posts will appear here.</p></div>}</div>}
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <button className="button button-primary profile-follow" onClick={() => follow(viewProfile)}>Follow @{viewProfile.username}</button>}</div>}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
   {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
-  {tab === 'admin' && <AdminPanel token={token} onClose={() => setTab('home')} />}
+  {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
   <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
-  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh FameLoop update is ready.</span><button onClick={() => window.dispatchEvent(new Event('fameloop:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
+  {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => window.dispatchEvent(new Event('VYRA:apply-update'))}>Update now</button><button className="update-dismiss" onClick={() => setUpdateReady(false)}><X size={16} /></button></div>}
   {toast && <button className="toast" onClick={() => setToast('')}>{toast} <X size={14} /></button>}
   </div>;
 }
