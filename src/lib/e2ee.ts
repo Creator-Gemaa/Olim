@@ -2,6 +2,12 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const PRIVATE_KEY_AAD = (userId: string) => encoder.encode("vyra-e2ee-private-v1:" + userId);
 
+function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return buffer;
+}
+
 export type E2EEIdentity = {
   privateKey: CryptoKey;
   publicKey: JsonWebKey;
@@ -32,7 +38,7 @@ async function deriveWrappingKey(password: string, salt: Uint8Array): Promise<Cr
   if (password.length < 10) throw new Error("Use your VYRA password (at least 10 characters).");
   const material = await crypto.subtle.importKey("raw", encoder.encode(password), "PBKDF2", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "PBKDF2", salt, iterations: 310000, hash: "SHA-256" },
+    { name: "PBKDF2", salt: asArrayBuffer(salt), iterations: 310000, hash: "SHA-256" },
     material,
     { name: "AES-GCM", length: 256 },
     false,
@@ -56,7 +62,7 @@ export async function createE2EEIdentity(userId: string, password: string): Prom
   const wrappingKey = await deriveWrappingKey(password, salt);
   const privateBytes = encoder.encode(JSON.stringify(privateJwk));
   const wrapped = await crypto.subtle.encrypt(
-    { name: "AES-GCM", iv, additionalData: PRIVATE_KEY_AAD(userId) },
+    { name: "AES-GCM", iv: asArrayBuffer(iv), additionalData: asArrayBuffer(PRIVATE_KEY_AAD(userId)) },
     wrappingKey,
     privateBytes
   );
@@ -159,7 +165,7 @@ export async function decryptText(value: string, key: CryptoKey): Promise<string
     throw new Error("This message was sent before encrypted messaging was enabled.");
   }
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: fromBase64(encodedIv), additionalData: encoder.encode("vyra-message-v1") },
+    { name: "AES-GCM", iv: asArrayBuffer(fromBase64(encodedIv)), additionalData: asArrayBuffer(encoder.encode("vyra-message-v1")) },
     key,
     fromBase64(encodedCipher)
   );
@@ -184,7 +190,7 @@ export async function encryptFile(file: Blob, key: CryptoKey, conversationId: st
 export async function decryptFile(blob: Blob, iv: string, key: CryptoKey, conversationId: string, mimeType: string): Promise<Blob> {
   const cipher = await blob.arrayBuffer();
   const plain = await crypto.subtle.decrypt(
-    { name: "AES-GCM", iv: fromBase64(iv), additionalData: encoder.encode("vyra-file-v1:" + conversationId) },
+    { name: "AES-GCM", iv: asArrayBuffer(fromBase64(iv)), additionalData: asArrayBuffer(encoder.encode("vyra-file-v1:" + conversationId)) },
     key,
     cipher
   );
