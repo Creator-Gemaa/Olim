@@ -576,9 +576,10 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
 }
 
 
-function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentityReady }: {
+function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentityReady, onStartCall }: {
   token: string; user: User; target: User | null; onClearTarget: () => void;
   onToast: (message: string) => void; onIdentityReady: (identity: E2EEIdentity | null) => void;
+  onStartCall: (call: any) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -596,7 +597,6 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const [decoded, setDecoded] = useState<Record<string, string>>({});
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
   const [isRecording, setIsRecording] = useState(false);
-  const [callInfo, setCallInfo] = useState<any>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -653,21 +653,6 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     const refresh = window.setInterval(() => loadMessages().catch(() => undefined), 3500);
     return () => { active = false; window.clearInterval(refresh); };
   }, [selectedId, token, onToast]);
-
-  useEffect(() => {
-    let active = true;
-    const poll = async () => {
-      try {
-        const result = await callApi<{ call: any | null }>('dm-call-poll', {}, token);
-        if (!active) return;
-        if (result.call) setCallInfo((current: any) => current?.id === result.call.id ? { ...current, ...result.call } : result.call);
-        else setCallInfo(null);
-      } catch { /* Call presence can retry quietly. */ }
-    };
-    void poll();
-    const timer = window.setInterval(() => void poll(), 3000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [token]);
 
   useEffect(() => {
     if (messagesRef.current) messagesRef.current.scrollTop = messagesRef.current.scrollHeight;
@@ -902,7 +887,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     if (!selected || selected.status !== 'accepted') return;
     try {
       const result = await callApi<{ call: any }>('dm-call-start', { conversationId: selected.id, callType }, token);
-      setCallInfo(result.call);
+      onStartCall(result.call);
     } catch (error) { onToast(error instanceof Error ? error.message : 'Could not start call.'); }
   }
 
@@ -974,7 +959,6 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
         </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a message request or accepted chat, or visit a creator profile to send the first message.</p></div>}
       </section>
     </div>
-    {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={() => setCallInfo(null)} onToast={onToast} />}
   </section>;
 }
 
@@ -1095,6 +1079,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [dmTarget, setDmTarget] = useState<User | null>(null);
   const [sharePost, setSharePost] = useState<Post | null>(null);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2EEIdentity | null>(null);
+  const [callInfo, setCallInfo] = useState<any>(null);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [storyOpen, setStoryOpen] = useState<Story | null>(null);
@@ -1122,6 +1107,21 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
+  useEffect(() => {
+    let active = true;
+    const pollCalls = async () => {
+      try {
+        const result = await callApi<{ call: any | null }>('dm-call-poll', {}, token);
+        if (!active) return;
+        if (result.call) setCallInfo((current: any) => current?.id === result.call.id ? { ...current, ...result.call } : result.call);
+        else setCallInfo(null);
+      } catch { /* Incoming call discovery retries without interrupting the feed. */ }
+    };
+    void pollCalls();
+    const timer = window.setInterval(() => void pollCalls(), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [token]);
+
   async function like(post: Post) {
     try {
       await callApi('like', { postId: post.id }, token);
@@ -1179,13 +1179,14 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} onLike={like} onProfile={profile => { setViewProfile(profile); setTab('profile'); }} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
   {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} onLike={() => like(p)} onComment={t => comment(p, t)} onProfile={() => { setViewProfile(p.author); setTab('profile'); }} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className="button button-primary" onClick={() => follow(viewProfile)}>Follow @{viewProfile.username}</button></div>}</div>}
-  {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onIdentityReady={setE2eeIdentity} />}
+  {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onIdentityReady={setE2eeIdentity} onStartCall={setCallInfo} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
   {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
   <footer className="app-footer"><span>FAMELOOP © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} identity={e2eeIdentity} onClose={() => setSharePost(null)} onToast={setToast} />}
+  {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={() => setCallInfo(null)} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
   {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => {
     if ((window as any).vyraDesktop?.installUpdate) (window as any).vyraDesktop.installUpdate();
