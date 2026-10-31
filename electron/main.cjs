@@ -1,5 +1,21 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
 const path = require('node:path');
+const { autoUpdater } = require('electron-updater');
+
+let mainWindow = null;
+autoUpdater.autoDownload = true;
+autoUpdater.autoInstallOnAppQuit = false;
+
+autoUpdater.on('update-downloaded', () => {
+  mainWindow?.webContents.send('vyra:desktop-update-ready');
+});
+autoUpdater.on('error', error => {
+  console.error('VYRA update check failed:', error?.message || error);
+  mainWindow?.webContents.send('vyra:desktop-update-error', String(error?.message || error));
+});
+ipcMain.on('vyra:install-update', () => {
+  if (app.isPackaged && process.platform === 'win32') autoUpdater.quitAndInstall(false, true);
+});
 
 app.setAppUserModelId('com.vyra.social');
 
@@ -16,9 +32,13 @@ function createWindow() {
       nodeIntegration: false,
       contextIsolation: true,
       sandbox: true,
-      webSecurity: true
+      webSecurity: true,
+      preload: path.join(__dirname, 'preload.cjs')
     }
   });
+
+  mainWindow = win;
+  win.on('closed', () => { if (mainWindow === win) mainWindow = null; });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (url.startsWith('https://')) shell.openExternal(url).catch(() => undefined);
@@ -37,6 +57,14 @@ function createWindow() {
 
 app.whenReady().then(() => {
   createWindow();
+  if (app.isPackaged && process.platform === 'win32') {
+    setTimeout(() => autoUpdater.checkForUpdates().catch(error => {
+      console.error('VYRA update check failed:', error?.message || error);
+    }), 10000);
+    setInterval(() => autoUpdater.checkForUpdates().catch(error => {
+      console.error('VYRA update check failed:', error?.message || error);
+    }), 4 * 60 * 60 * 1000);
+  }
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
