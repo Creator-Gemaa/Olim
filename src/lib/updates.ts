@@ -73,7 +73,7 @@ export async function checkLatestUpdate(): Promise<UpdateCheckResult> {
   if (!isOfficialReleaseAsset(androidDownloadUrl, 'VYRA-Android.apk') ||
       !isOfficialReleaseAsset(windowsDownloadUrl, 'VYRA-Setup.exe') ||
       typeof releaseUrl !== 'string' ||
-      !releaseUrl.startsWith('https://github.com/Creator-Gemaa/Olim/releases/tag/')) {
+      !releaseUrl === 'https://github.com/Creator-Gemaa/Olim/releases/tag/vyra-latest') {
     throw new Error('The VYRA update manifest contains an unexpected download link.');
   }
 
