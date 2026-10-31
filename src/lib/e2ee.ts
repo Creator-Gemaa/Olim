@@ -97,7 +97,7 @@ export async function unlockE2EEIdentity(
     const privateBytes = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: asArrayBuffer(iv), additionalData: asArrayBuffer(PRIVATE_KEY_AAD(userId)) },
       wrappingKey,
-      fromBase64(stored.wrappedPrivateKey)
+      asArrayBuffer(fromBase64(stored.wrappedPrivateKey))
     );
     const privateJwk = JSON.parse(decoder.decode(privateBytes)) as JsonWebKey;
     const privateKey = await crypto.subtle.importKey(
