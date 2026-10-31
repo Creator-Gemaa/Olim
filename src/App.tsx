@@ -1080,6 +1080,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [sharePost, setSharePost] = useState<Post | null>(null);
   const [e2eeIdentity, setE2eeIdentity] = useState<E2EEIdentity | null>(null);
   const [callInfo, setCallInfo] = useState<any>(null);
+  const closeCall = useCallback(() => setCallInfo(null), []);
   const [notifications, setNotifications] = useState<any[]>([]);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [storyOpen, setStoryOpen] = useState<Story | null>(null);
@@ -1113,7 +1114,9 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       try {
         const result = await callApi<{ call: any | null }>('dm-call-poll', {}, token);
         if (!active) return;
-        if (result.call) setCallInfo((current: any) => current?.id === result.call.id ? { ...current, ...result.call } : result.call);
+        if (result.call) setCallInfo((current: any) =>
+          current?.id === result.call.id && current.status === result.call.status ? current : result.call
+        );
         else setCallInfo(null);
       } catch { /* Incoming call discovery retries without interrupting the feed. */ }
     };
@@ -1186,7 +1189,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   <footer className="app-footer"><span>VYRA © 2026</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS ✦</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} identity={e2eeIdentity} onClose={() => setSharePost(null)} onToast={setToast} />}
-  {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={() => setCallInfo(null)} onToast={setToast} />}
+  {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <video src={storyOpen.media_url} autoPlay controls /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
   {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => {
     if ((window as any).vyraDesktop?.installUpdate) (window as any).vyraDesktop.installUpdate();
