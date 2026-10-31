@@ -416,14 +416,20 @@ Deno.serve(async (req: Request) => {
       const { data: existing, error: lookupError } = await db.from("dm_conversations")
         .select("*").eq("user_a", userA).eq("user_b", userB).maybeSingle();
       if (lookupError) throw lookupError;
+      if (!existing || existing.status === "declined") {
+        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+        const { count: requestsToday } = await db.from("dm_conversations")
+          .select("id", { count: "exact", head: true })
+          .eq("requester_id", current.profile.id).gte("created_at", cutoff);
+        if ((requestsToday || 0) >= 20) return fail("You've reached today's message-request limit.", 429, origin);
+      }
       let conversation: any = existing;
-      let isNew = false;
       if (!conversation) {
         const { data: created, error: createError } = await db.from("dm_conversations")
           .insert({ user_a: userA, user_b: userB, requester_id: current.profile.id, status: "pending" })
           .select("*").single();
         if (createError && createError.code !== "23505") throw createError;
-        if (created) { conversation = created; isNew = true; }
+        if (created) { conversation = created; }
         else {
           const { data: raced, error: racedError } = await db.from("dm_conversations")
             .select("*").eq("user_a", userA).eq("user_b", userB).maybeSingle();
@@ -451,14 +457,9 @@ Deno.serve(async (req: Request) => {
         }, 200, origin);
       }
 
-      // A declined request may be sent again, subject to a daily anti-spam limit.
-      const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-      const { count: requestsToday } = await db.from("dm_conversations")
-        .select("id", { count: "exact", head: true })
-        .eq("requester_id", current.profile.id).gte("created_at", cutoff);
-      if (!isNew && (requestsToday || 0) >= 20) return fail("You've reached today's message-request limit.", 429, origin);
+      // A declined request may be sent again after the daily anti-spam check above.
       const { data: reopened, error: reopenError } = await db.from("dm_conversations")
-        .update({ requester_id: current.profile.id, status: "pending", accepted_at: null })
+        .update({ requester_id: current.profile.id, status: "pending", accepted_at: null, created_at: new Date().toISOString() })
         .eq("id", conversation.id).select("*").single();
       if (reopenError) throw reopenError;
       conversation = reopened;
@@ -493,7 +494,6 @@ Deno.serve(async (req: Request) => {
         .eq("id", conversationId).eq("status", "pending");
       if (error) throw error;
       if (decision === "accept") {
-        const { data: requester } = await db.from("profiles").select("username").eq("id", conversation.requester_id).maybeSingle();
         await db.from("notifications").insert({
           user_id: conversation.requester_id, actor_id: current.profile.id, type: "message_accepted",
           message: "@" + current.profile.username + " accepted your message request.",
