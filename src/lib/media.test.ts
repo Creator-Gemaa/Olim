@@ -13,7 +13,7 @@ describe('media validation', () => {
     expect(acceptedMediaType('application/x-msdownload')).toBe(false);
   });
   it('enforces bounded upload sizes', () => {
-    expect(maxBytesFor('video/mp4')).toBe(100 * 1024 * 1024);
+    expect(maxBytesFor('video/mp4')).toBe(50 * 1024 * 1024);
     expect(maxBytesFor('image/png')).toBe(12 * 1024 * 1024);
     expect(maxBytesFor('text/plain')).toBe(0);
   });
