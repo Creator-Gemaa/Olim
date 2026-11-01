@@ -1149,9 +1149,9 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     if (!selected || !composer.trim() || !identity) return;
+    const text = composer.trim();
     setBusy(true);
     try {
-      const text = composer.trim();
       const key = await getConversationKey(selected);
       const content = await encryptText(text, key);
       setComposer('');
@@ -1161,6 +1161,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
       setSyncStatus('live');
       await loadInbox();
     } catch (error) {
+      setComposer(current => current || text);
       onToast(error instanceof Error ? error.message : 'Message could not be sent.');
     }
     finally { setBusy(false); }

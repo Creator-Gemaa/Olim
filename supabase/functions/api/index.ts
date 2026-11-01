@@ -717,15 +717,21 @@ Deno.serve(async (req: Request) => {
     }
 
     if (action === "dm-call-ice-config") {
-      requireUser();
+      const current = requireUser();
       const iceServers: any[] = [
         { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
       ];
       const turnUrls = (Deno.env.get("TURN_URLS") || "").split(",").map(value => value.trim()).filter(Boolean);
-      const turnUsername = Deno.env.get("TURN_USERNAME") || "";
-      const turnCredential = Deno.env.get("TURN_CREDENTIAL") || "";
-      if (turnUrls.length && turnUsername && turnCredential) {
-        iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
+      const turnSharedSecret = Deno.env.get("TURN_SHARED_SECRET") || "";
+      if (turnUrls.length && turnSharedSecret) {
+        // Coturn REST API credentials expire after one hour; never expose a long-lived TURN password.
+        const username = String(Math.floor(Date.now() / 1000) + 3600) + ":" + current.profile.id;
+        const hmacKey = await crypto.subtle.importKey(
+          "raw", new TextEncoder().encode(turnSharedSecret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"],
+        );
+        const signature = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, new TextEncoder().encode(username)));
+        const credential = btoa(String.fromCharCode(...signature));
+        iceServers.push({ urls: turnUrls, username, credential });
       }
       return response({ iceServers, turnConfigured: iceServers.length > 1 }, 200, origin);
     }
