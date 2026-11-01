@@ -68,6 +68,77 @@ async function encryptCredentials(value: string) {
   const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(value));
   return "v1." + b64(iv) + "." + b64(new Uint8Array(cipher));
 }
+
+async function decryptCredentials(value: string) {
+  const rawKey = Deno.env.get("PAYMENT_ENCRYPTION_KEY") || "";
+  if (!rawKey) throw new Error("Payment credential encryption is not configured.");
+  const keyBytes = fromB64(rawKey.trim());
+  if (keyBytes.length !== 32) throw new Error("PAYMENT_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  const [version, ivText, cipherText] = value.split(".");
+  if (version !== "v1" || !ivText || !cipherText) throw new Error("Saved payment credentials have an unsupported format.");
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromB64(ivText) },
+    key,
+    fromB64(cipherText),
+  );
+  return JSON.parse(new TextDecoder().decode(plain)) as Record<string, string>;
+}
+function randomSecret(bytes = 32) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
+    .map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+async function getFollowerCount(userId: string) {
+  const { count, error } = await db.from("follows")
+    .select("follower_id", { count: "exact", head: true }).eq("following_id", userId);
+  if (error) throw error;
+  return count || 0;
+}
+async function isMonetizationUnlocked(userId: string) {
+  const { data: profile, error: profileError } = await db.from("profiles")
+    .select("monetization_unlocked_at").eq("id", userId).maybeSingle();
+  if (profileError) throw profileError;
+  if (profile?.monetization_unlocked_at) return true;
+  if ((await getFollowerCount(userId)) < 20000) return false;
+  const unlockedAt = new Date().toISOString();
+  const { error: updateError } = await db.from("profiles")
+    .update({ monetization_unlocked_at: unlockedAt }).eq("id", userId);
+  if (updateError) throw updateError;
+  return true;
+}
+async function razorpayRequest(credentials: Record<string, string>, endpoint: string, payload?: Record<string, unknown>) {
+  const keyId = String(credentials.keyId || "");
+  const keySecret = String(credentials.keySecret || "");
+  if (!keyId || !keySecret) throw new Error("Connect your Razorpay account again before using monetization.");
+  const headers = {
+    "Authorization": "Basic " + btoa(keyId + ":" + keySecret),
+    "Content-Type": "application/json",
+  };
+  const result = await fetch("https://api.razorpay.com/v1/" + endpoint.replace(/^\//, ""), {
+    method: payload ? "POST" : "GET",
+    headers,
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  const data = await result.json().catch(() => ({}));
+  if (!result.ok) {
+    const description = String(data?.error?.description || data?.error?.reason || "");
+    throw new Error(description || "Razorpay rejected the request. Check your API keys and subscription access.");
+  }
+  return data;
+}
+async function getMonetizationConnection(creatorId: string) {
+  const followerCount = await getFollowerCount(creatorId);
+  if (!(await isMonetizationUnlocked(creatorId))) throw new Error("Creator monetization unlocks at 20,000 followers. Your current count is " + followerCount.toLocaleString("en-IN") + ".");
+  const { data: connection, error } = await db.from("creator_payment_connections")
+    .select("provider,encrypted_credentials,billing_consent_at,billing_consent_version,connected_at")
+    .eq("creator_id", creatorId).maybeSingle();
+  if (error) throw error;
+  if (!connection || connection.provider !== "razorpay" || !connection.billing_consent_at) {
+    throw new Error("Connect Razorpay and explicitly accept the billing consent before creating paid memberships.");
+  }
+  return { followerCount, connection, credentials: await decryptCredentials(connection.encrypted_credentials) };
+}
+
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -114,34 +185,65 @@ async function auth(req: Request) {
   if (!profile) return null;
   return { tokenHash, session, profile };
 }
-function publicMedia(path: string | null) {
-  return path ? db.storage.from("media").getPublicUrl(path).data.publicUrl : null;
+function publicMedia(path: string | null, bucket = "media") {
+  return path ? db.storage.from(bucket).getPublicUrl(path).data.publicUrl : null;
 }
+async function signedMemberMedia(path: string, bucket = "member-media") {
+  const { data, error } = await db.storage.from(bucket).createSignedUrl(path, 60 * 60);
+  if (error || !data?.signedUrl) throw error || new Error("Could not create a private media access link.");
+  return data.signedUrl;
+}
+
 async function enrichPosts(rows: any[], viewerId: string) {
   if (!rows?.length) return [];
   const ids = rows.map((row) => row.id);
   const authorIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
-  const [likesResult, followsResult, savedResult] = await Promise.all([
+  const membershipPlanIds = [...new Set(rows.filter((row) => row.visibility === "members_only" && row.membership_plan_id).map((row) => row.membership_plan_id))];
+  const [likesResult, followsResult, savedResult, subscriptionsResult] = await Promise.all([
     db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids),
-    authorIds.length
-      ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds)
-      : Promise.resolve({ data: [], error: null }),
+    authorIds.length ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds) : Promise.resolve({ data: [], error: null }),
     db.from("saved_posts").select("post_id").eq("user_id", viewerId).in("post_id", ids),
+    membershipPlanIds.length ? db.from("subscriptions").select("membership_plan_id,current_end_at").eq("subscriber_id", viewerId).eq("status", "active").in("membership_plan_id", membershipPlanIds) : Promise.resolve({ data: [], error: null }),
   ]);
   if (likesResult.error) throw likesResult.error;
   if (followsResult.error) throw followsResult.error;
   if (savedResult.error) throw savedResult.error;
+  if (subscriptionsResult.error) throw subscriptionsResult.error;
   const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
   const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
   const saved = new Set((savedResult.data || []).map((item: any) => item.post_id));
-  return rows.map((row) => ({
-    id: row.id, title: row.title || "", caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
-    kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
-    comments_count: row.comments_count || 0, views_count: row.views_count || 0,
-    created_at: row.created_at, is_world_featured: !!row.is_world_featured,
-    liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+  const memberPlans = new Set((subscriptionsResult.data || []).filter((item: any) =>
+    !item.current_end_at || new Date(item.current_end_at).getTime() > Date.now()
+  ).map((item: any) => item.membership_plan_id));
+  return await Promise.all(rows.map(async (row) => {
+    const isMembersOnly = row.visibility === "members_only";
+    const isOwner = row.user_id === viewerId;
+    const isMember = !!row.membership_plan_id && memberPlans.has(row.membership_plan_id);
+    const isLocked = isMembersOnly && !isOwner && !isMember;
+    let mediaUrl: string | null = null;
+    if (!isLocked) mediaUrl = row.media_bucket === "member-media"
+      ? await signedMemberMedia(row.media_path, "member-media")
+      : publicMedia(row.media_path, "media");
+    return {
+      id: row.id, title: row.title || "", caption: row.caption, media_url: mediaUrl,
+      media_type: row.media_type, kind: row.kind, duration_seconds: Number(row.duration_seconds || 0),
+      likes_count: row.likes_count || 0, comments_count: row.comments_count || 0,
+      views_count: row.views_count || 0, created_at: row.created_at,
+      is_world_featured: !!row.is_world_featured, visibility: row.visibility || "public",
+      membership_plan_id: row.membership_plan_id || null, is_locked: isLocked,
+      liked: liked.has(row.id), saved: saved.has(row.id),
+      author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+    };
   }));
 }
+
+async function getGroupMembership(groupId: string, userId: string) {
+  const { data, error } = await db.from("dm_group_members")
+    .select("group_id,user_id,role").eq("group_id", groupId).eq("user_id", userId).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function authRateLimit(req: Request) {
   const address = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   const ipHash = await digest("fameloop-rate:" + address);
@@ -165,14 +267,15 @@ async function exactCopyrightMatch(hash: string) {
   const { data } = await db.from("copyright_fingerprints").select("id,rights_holder,source_label").eq("sha256", hash).maybeSingle();
   return data || null;
 }
-async function storageFileExists(path: string) {
+async function storageFileExists(path: string, bucket = "media") {
   const parts = path.split("/");
   const folder = parts.slice(0, -1).join("/");
   const leaf = parts[parts.length - 1];
-  const { data, error } = await db.storage.from("media").list(folder, { search: leaf, limit: 10 });
+  const { data, error } = await db.storage.from(bucket).list(folder, { search: leaf, limit: 10 });
   if (error) return false;
   return (data || []).some((item: any) => item.name === leaf);
 }
+
 function mimeFamily(type: string) {
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
@@ -377,14 +480,14 @@ Deno.serve(async (req: Request) => {
       const postId = String(body.postId || "");
       if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid post to delete.", 422, origin);
       const { data: post, error: lookupError } = await db.from("posts")
-        .select("id,media_path,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
+        .select("id,media_path,media_bucket,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
       if (lookupError) throw lookupError;
       if (!post) return fail("This post was not found on your creator account.", 404, origin);
       const { data: deleted, error: deleteError } = await db.from("posts").delete()
         .eq("id", postId).eq("user_id", current.profile.id).select("id").maybeSingle();
       if (deleteError) throw deleteError;
       if (!deleted) return fail("The post could not be deleted. Refresh and try again.", 409, origin);
-      const { error: storageError } = await db.storage.from("media").remove([post.media_path]);
+      const { error: storageError } = await db.storage.from(post.media_bucket || "media").remove([post.media_path]);
       return response({ ok: true, storageCleanupPending: !!storageError }, 200, origin);
     }
     if (action === "search-users" || action === "suggestions") {
@@ -483,52 +586,279 @@ Deno.serve(async (req: Request) => {
     if (action === "dm-inbox") {
       const current = requireUser();
       const userId = current.profile.id;
-      const [aResult, bResult] = await Promise.all([
+      const [aResult, bResult, membershipResult] = await Promise.all([
         db.from("dm_conversations").select("*").eq("user_a", userId).order("last_message_at", { ascending: false }).limit(100),
         db.from("dm_conversations").select("*").eq("user_b", userId).order("last_message_at", { ascending: false }).limit(100),
+        db.from("dm_group_members").select("group_id,role,joined_at").eq("user_id", userId).order("joined_at", { ascending: false }).limit(100),
       ]);
       if (aResult.error) throw aResult.error;
       if (bResult.error) throw bResult.error;
+      if (membershipResult.error) throw membershipResult.error;
       const rows = [...(aResult.data || []), ...(bResult.data || [])]
         .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
-      if (!rows.length) return response({ conversations: [] }, 200, origin);
-      const otherIds = [...new Set(rows.map((row: any) => row.user_a === userId ? row.user_b : row.user_a))];
-      const { data: people, error: peopleError } = await db.from("profiles")
-        .select("id,username,display_name,bio,avatar_path,is_verified,follower_count,following_count,posts_count,is_admin")
-        .in("id", otherIds);
-      if (peopleError) throw peopleError;
-      const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
-      const ids = rows.map((row: any) => row.id);
-      const { data: recentMessages, error: recentError } = await db.from("dm_messages")
-        .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
-        .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
-      if (recentError) throw recentError;
-      const latestByConversation = new Map<string, any>();
-      for (const message of recentMessages || []) {
-        if (!latestByConversation.has(message.conversation_id)) latestByConversation.set(message.conversation_id, message);
+      const directConversations: any[] = [];
+      if (rows.length) {
+        const otherIds = [...new Set(rows.map((row: any) => row.user_a === userId ? row.user_b : row.user_a))];
+        const { data: people, error: peopleError } = await db.from("profiles")
+          .select("id,username,display_name,bio,avatar_path,is_verified,follower_count,following_count,posts_count,is_admin")
+          .in("id", otherIds);
+        if (peopleError) throw peopleError;
+        const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
+        const ids = rows.map((row: any) => row.id);
+        const { data: recentMessages, error: recentError } = await db.from("dm_messages")
+          .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
+          .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
+        if (recentError) throw recentError;
+        const latestByConversation = new Map<string, any>();
+        for (const message of recentMessages || []) {
+          if (!latestByConversation.has(message.conversation_id)) latestByConversation.set(message.conversation_id, message);
+        }
+        directConversations.push(...rows.map((row: any) => {
+          const otherId = row.user_a === userId ? row.user_b : row.user_a;
+          const latest = latestByConversation.get(row.id) || null;
+          return {
+            id: row.id, type: "direct", is_group: false, status: row.status, requester_id: row.requester_id,
+            created_at: row.created_at, last_message_at: row.last_message_at,
+            otherUser: safeUser(peopleById.get(otherId)),
+            last_message: latest ? {
+              ...latest,
+              preview: latest.e2ee_version === 1
+                ? latest.message_type === "image" ? "Older encrypted photo"
+                  : latest.message_type === "voice" ? "Older encrypted voice note"
+                  : "Older encrypted message"
+                : latest.message_type === "image" ? "Photo"
+                  : latest.message_type === "voice" ? "Voice note"
+                  : latest.message_type === "shared_post" ? "Shared a video"
+                  : String(latest.content || "").slice(0, 100),
+            } : null,
+          };
+        }).filter((row: any) => row.otherUser));
       }
-      const conversations = rows.map((row: any) => {
-        const otherId = row.user_a === userId ? row.user_b : row.user_a;
-        const latest = latestByConversation.get(row.id) || null;
-        return {
-          id: row.id, status: row.status, requester_id: row.requester_id,
-          created_at: row.created_at, last_message_at: row.last_message_at,
-          otherUser: safeUser(peopleById.get(otherId)),
-          last_message: latest ? {
-            ...latest,
-            preview: latest.e2ee_version === 1
-              ? latest.message_type === "image" ? "Older encrypted photo"
-                : latest.message_type === "voice" ? "Older encrypted voice note"
-                : "Older encrypted message"
-              : latest.message_type === "image" ? "Photo"
-                : latest.message_type === "voice" ? "Voice note"
-                : latest.message_type === "shared_post" ? "Shared a video"
-                : String(latest.content || "").slice(0, 100),
-          } : null,
-        };
-      }).filter((row: any) => row.otherUser);
+      const groupIds = [...new Set((membershipResult.data || []).map((row: any) => row.group_id))];
+      const groupConversations: any[] = [];
+      if (groupIds.length) {
+        const [{ data: groups, error: groupsError }, { data: members, error: membersError }, { data: latest, error: latestError }] = await Promise.all([
+          db.from("dm_groups").select("id,name,created_by,created_at,last_message_at").in("id", groupIds),
+          db.from("dm_group_members").select("group_id,user_id,role").in("group_id", groupIds),
+          db.from("dm_group_messages").select("group_id,content,sender_id,message_type,created_at")
+            .in("group_id", groupIds).order("created_at", { ascending: false }).limit(500),
+        ]);
+        if (groupsError) throw groupsError;
+        if (membersError) throw membersError;
+        if (latestError) throw latestError;
+        const latestByGroup = new Map<string, any>();
+        for (const message of latest || []) if (!latestByGroup.has(message.group_id)) latestByGroup.set(message.group_id, message);
+        const memberCount = new Map<string, number>();
+        const groupRole = new Map<string, string>();
+        for (const member of members || []) {
+          memberCount.set(member.group_id, (memberCount.get(member.group_id) || 0) + 1);
+          if (member.user_id === userId) groupRole.set(member.group_id, member.role);
+        }
+        groupConversations.push(...(groups || []).map((group: any) => {
+          const last = latestByGroup.get(group.id) || null;
+          return {
+            id: "group:" + group.id, group_id: group.id, type: "group", is_group: true,
+            group_name: group.name, group_member_count: memberCount.get(group.id) || 0,
+            group_role: groupRole.get(group.id) || "member",
+            status: "accepted", requester_id: userId,
+            created_at: group.created_at, last_message_at: group.last_message_at,
+            otherUser: {
+              id: group.id, username: group.name, display_name: group.name,
+              bio: "", avatar_url: null, is_verified: false, follower_count: 0,
+              following_count: 0, posts_count: 0,
+            },
+            last_message: last ? {
+              ...last,
+              preview: last.message_type === "image" ? "Photo"
+                : last.message_type === "voice" ? "Voice note"
+                : String(last.content || "").slice(0, 100),
+            } : null,
+          };
+        }));
+      }
+      const conversations = [...directConversations, ...groupConversations]
+        .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
       return response({ conversations }, 200, origin);
     }
+    if (action === "dm-group-create") {
+      const current = requireUser();
+      const name = String(body.name || "").trim().slice(0, 60);
+      const rawUsernames = Array.isArray(body.usernames) ? body.usernames : [];
+      const usernames = [...new Set(rawUsernames.map((value: unknown) => String(value).trim().toLowerCase().replace(/^@/, "")).filter(Boolean))];
+      if (name.length < 2 || usernames.length < 1 || usernames.length > 19) {
+        return fail("Enter a group name and between 1 and 19 other usernames.", 422, origin);
+      }
+      const { data: people, error: peopleError } = await db.from("profiles")
+        .select("id,username").in("username", usernames);
+      if (peopleError) throw peopleError;
+      const found = new Set((people || []).map((person: any) => person.username));
+      const missing = usernames.filter((username: string) => !found.has(username));
+      if (missing.length) return fail("These usernames were not found: " + missing.map((name: string) => "@" + name).join(", "), 404, origin);
+      const memberIds = [...new Set([current.profile.id, ...(people || []).map((person: any) => person.id)])];
+      if (memberIds.length < 2) return fail("Add at least one other creator to the group.", 422, origin);
+      const { data: group, error } = await db.from("dm_groups").insert({
+        name, created_by: current.profile.id,
+      }).select("id,name,created_by,created_at,last_message_at").single();
+      if (error) throw error;
+      const { error: membersError } = await db.from("dm_group_members").insert(memberIds.map((userId: string) => ({
+        group_id: group.id, user_id: userId, role: userId === current.profile.id ? "admin" : "member",
+      })));
+      if (membersError) throw membersError;
+      await db.from("notifications").insert(memberIds.filter((id: string) => id !== current.profile.id).map((id: string) => ({
+        user_id: id, actor_id: current.profile.id, type: "group_invite",
+        message: "@" + current.profile.username + " added you to the group " + name + ".",
+      })));
+      await audit(current.profile.id, "create_dm_group", group.id, { members: memberIds.length });
+      return response({ group: { ...group, member_count: memberIds.length } }, 201, origin);
+    }
+    if (action === "dm-group-add-members") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const role = await getGroupMembership(groupId, current.profile.id);
+      if (!role || role.role !== "admin") return fail("Only group admins can add members.", 403, origin);
+      const usernames = Array.isArray(body.usernames)
+        ? [...new Set(body.usernames.map((value: unknown) => String(value).trim().toLowerCase().replace(/^@/, "")).filter(Boolean))]
+        : [];
+      if (!usernames.length || usernames.length > 19) return fail("Enter between 1 and 19 usernames.", 422, origin);
+      const { data: people, error } = await db.from("profiles").select("id,username").in("username", usernames);
+      if (error) throw error;
+      if ((people || []).length !== usernames.length) return fail("One or more usernames could not be found.", 404, origin);
+      const { count, error: countError } = await db.from("dm_group_members")
+        .select("user_id", { count: "exact", head: true }).eq("group_id", groupId);
+      if (countError) throw countError;
+      const newMembers = (people || []).filter((person: any) => person.id !== current.profile.id);
+      if ((count || 0) + newMembers.length > 30) return fail("Groups can have up to 30 members.", 422, origin);
+      const { data: existing, error: existingError } = await db.from("dm_group_members")
+        .select("user_id").eq("group_id", groupId);
+      if (existingError) throw existingError;
+      const existingIds = new Set((existing || []).map((row: any) => row.user_id));
+      const additions = newMembers.filter((person: any) => !existingIds.has(person.id));
+      if (!additions.length) return fail("Those creators are already in this group.", 409, origin);
+      const { error: insertError } = await db.from("dm_group_members").insert(additions.map((person: any) => ({
+        group_id: groupId, user_id: person.id, role: "member",
+      })));
+      if (insertError) throw insertError;
+      await db.from("notifications").insert(additions.map((person: any) => ({
+        user_id: person.id, actor_id: current.profile.id, type: "group_invite",
+        message: "@" + current.profile.username + " added you to a VYRA group.",
+      })));
+      return response({ added: additions.length }, 200, origin);
+    }
+    if (action === "dm-group-leave") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const membership = await getGroupMembership(groupId, current.profile.id);
+      if (!membership) return fail("You are not a member of this group.", 404, origin);
+      const { data: remaining, error: remainError } = await db.from("dm_group_members")
+        .select("user_id,role").eq("group_id", groupId).neq("user_id", current.profile.id);
+      if (remainError) throw remainError;
+      if (membership.role === "admin" && remaining?.length && !remaining.some((row: any) => row.role === "admin")) {
+        const { error: promoteError } = await db.from("dm_group_members").update({ role: "admin" })
+          .eq("group_id", groupId).eq("user_id", remaining[0].user_id);
+        if (promoteError) throw promoteError;
+      }
+      const { error } = await db.from("dm_group_members").delete()
+        .eq("group_id", groupId).eq("user_id", current.profile.id);
+      if (error) throw error;
+      if (!remaining?.length) await db.from("dm_groups").delete().eq("id", groupId);
+      return response({ ok: true }, 200, origin);
+    }
+    if (action === "dm-group-messages") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const membership = await getGroupMembership(groupId, current.profile.id);
+      if (!membership) return fail("Group not found.", 404, origin);
+      const { data, error } = await db.from("dm_group_messages")
+        .select("id,group_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,created_at,sender:profiles!dm_group_messages_sender_id_fkey(*)")
+        .eq("group_id", groupId).order("created_at", { ascending: true }).limit(200);
+      if (error) throw error;
+      const messages = await Promise.all((data || []).map(async (message: any) => {
+        let mediaUrl = null;
+        if (message.attachment_path) {
+          const { data: signed, error: signedError } = await db.storage.from("private-chat")
+            .createSignedUrl(message.attachment_path, 60 * 60);
+          if (signedError) throw signedError;
+          mediaUrl = signed?.signedUrl || null;
+        }
+        return { ...message, media_url: mediaUrl, sender: safeUser(message.sender) };
+      }));
+      return response({ messages }, 200, origin);
+    }
+    if (action === "dm-group-attachment-upload") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const mime = String(body.mimeType || "");
+      const size = Number(body.size || 0);
+      const messageType = String(body.messageType || "");
+      const allowed = messageType === "image"
+        ? ["image/jpeg","image/png","image/webp"]
+        : messageType === "voice" ? ["audio/webm","audio/ogg","audio/mp4","audio/mpeg"] : [];
+      if (!await getGroupMembership(groupId, current.profile.id)) return fail("You are not a member of this group.", 403, origin);
+      if (!allowed.includes(mime) || !Number.isFinite(size) || size < 1 || size > 15 * 1024 * 1024) {
+        return fail("This group attachment type or size is not supported.", 422, origin);
+      }
+      const path = current.profile.id + "/groups/" + groupId + "/" + crypto.randomUUID() + ".bin";
+      const { data, error } = await db.storage.from("private-chat").createSignedUploadUrl(path, { upsert: false });
+      if (error || !data?.token) throw error || new Error("Could not create a secure group upload URL.");
+      return response({ path, uploadToken: data.token }, 200, origin);
+    }
+    if (action === "dm-group-send") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const content = String(body.content || "");
+      const messageType = String(body.messageType || "text");
+      const attachmentPath = String(body.attachmentPath || "");
+      const attachmentMime = String(body.attachmentMime || "");
+      if (!await getGroupMembership(groupId, current.profile.id)) return fail("You are not a member of this group.", 403, origin);
+      if (!content.trim() || content.length > 1000) return fail("Messages must contain 1–1000 characters.", 422, origin);
+      if (!["text","image","voice"].includes(messageType)) return fail("Unsupported group message type.", 422, origin);
+      if (messageType === "text" && attachmentPath) return fail("Text messages cannot contain attachment data.", 422, origin);
+      if (messageType !== "text") {
+        if (!attachmentPath.startsWith(current.profile.id + "/groups/" + groupId + "/")
+          || !["image/jpeg","image/png","image/webp","audio/webm","audio/ogg","audio/mp4","audio/mpeg"].includes(attachmentMime)
+          || !(await storageFileExists(attachmentPath, "private-chat"))) return fail("Group attachment could not be verified.", 422, origin);
+      }
+      const { data: message, error } = await db.from("dm_group_messages").insert({
+        group_id: groupId, sender_id: current.profile.id, content,
+        message_type: messageType, attachment_path: messageType === "text" ? null : attachmentPath,
+        attachment_mime: messageType === "text" ? null : attachmentMime,
+      }).select("id,group_id,sender_id,content,message_type,attachment_path,attachment_mime,created_at").single();
+      if (error) throw error;
+      await db.from("dm_groups").update({ last_message_at: message.created_at }).eq("id", groupId);
+      const { data: members, error: membersError } = await db.from("dm_group_members")
+        .select("user_id").eq("group_id", groupId).neq("user_id", current.profile.id);
+      if (membersError) throw membersError;
+      if (members?.length) await db.from("notifications").insert(members.map((member: any) => ({
+        user_id: member.user_id, actor_id: current.profile.id, type: "group_message",
+        message: "@" + current.profile.username + " sent a message in your group.",
+      })));
+      let mediaUrl = null;
+      if (message.attachment_path) {
+        const { data: signed, error: signedError } = await db.storage.from("private-chat")
+          .createSignedUrl(message.attachment_path, 60 * 60);
+        if (signedError) throw signedError;
+        mediaUrl = signed?.signedUrl || null;
+      }
+      return response({ message: { ...message, media_url: mediaUrl } }, 201, origin);
+    }
+    if (action === "dm-group-delete-message") {
+      const current = requireUser();
+      const messageId = String(body.messageId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(messageId)) return fail("Choose a valid group message.", 422, origin);
+      const { data: message, error } = await db.from("dm_group_messages")
+        .select("id,group_id,sender_id,attachment_path").eq("id", messageId).eq("sender_id", current.profile.id).maybeSingle();
+      if (error) throw error;
+      if (!message || !await getGroupMembership(message.group_id, current.profile.id)) return fail("Only your own group messages can be removed.", 404, origin);
+      const { error: removeError } = await db.from("dm_group_messages").delete().eq("id", messageId).eq("sender_id", current.profile.id);
+      if (removeError) throw removeError;
+      let storageCleanupPending = false;
+      if (message.attachment_path) {
+        const { error: storageError } = await db.storage.from("private-chat").remove([message.attachment_path]);
+        storageCleanupPending = !!storageError;
+      }
+      return response({ ok: true, storageCleanupPending }, 200, origin);
+    }
+
 
     if (action === "e2ee-key-get") {
       const current = requireUser();
@@ -955,11 +1285,24 @@ Deno.serve(async (req: Request) => {
       if (purpose === "audio" && family !== "audio") return fail("Choose an MP3 or M4A audio file.", 422, origin);
       const match = await exactCopyrightMatch(hash);
       if (match) return response({ blocked: true, reason: "exact_copyright_hash_match" }, 200, origin);
+      const visibility = purpose === "post" ? String(body.visibility || "public") : "public";
+      let bucketName = "media";
+      if (visibility === "members_only") {
+        const planId = String(body.membershipPlanId || "");
+        if (purpose !== "post" || family !== "video" || !/^[0-9a-f-]{36}$/i.test(planId)) return fail("Members-only uploads require a video and a valid membership plan.", 422, origin);
+        if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Creator monetization unlocks at 20,000 followers.", 403, origin);
+        const [{ data: plan }, { data: connection }] = await Promise.all([
+          db.from("membership_plans").select("id").eq("id", planId).eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
+          db.from("creator_payment_connections").select("provider,billing_consent_at").eq("creator_id", current.profile.id).maybeSingle(),
+        ]);
+        if (!plan || connection?.provider !== "razorpay" || !connection?.billing_consent_at) return fail("Connect Razorpay and select one of your active membership plans.", 403, origin);
+        bucketName = "member-media";
+      } else if (visibility !== "public") return fail("Choose a valid post visibility.", 422, origin);
       const extension = name.includes(".") ? name.split(".").pop() : "bin";
       const path = current.profile.id + "/" + crypto.randomUUID() + "." + extension;
-      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      const { data, error } = await db.storage.from(bucketName).createSignedUploadUrl(path, { upsert: false });
       if (error || !data?.token) throw error || new Error("Could not create a signed upload.");
-      return response({ path, uploadToken: data.token }, 200, origin);
+      return response({ path, uploadToken: data.token, bucketName }, 200, origin);
     }
     if (action === "complete-upload") {
       const current = requireUser();
@@ -968,6 +1311,8 @@ Deno.serve(async (req: Request) => {
       const hash = String(body.sha256 || "").toLowerCase();
       const mime = String(body.mimeType || "");
       const family = mimeFamily(mime);
+      const bucketName = String(body.bucketName || "media");
+      if (!["media","member-media"].includes(bucketName)) return fail("Invalid media destination.", 422, origin);
       const adminCurated = body.adminCurated === true;
       let curatedSourceUrl = "";
       let curatedRightsHolder = "";
@@ -991,21 +1336,23 @@ Deno.serve(async (req: Request) => {
         return fail("Confirm that you own this video or have permission to publish it.", 422, origin);
       }
       if (!path.startsWith(current.profile.id + "/") || !/^[a-f0-9]{64}$/.test(hash)) return fail("Invalid upload reference.", 422, origin);
-      if (!(await storageFileExists(path))) return fail("Upload was not found in media storage.", 422, origin);
-      const { data: uploadedBlob, error: downloadError } = await db.storage.from("media").download(path);
+      if (purpose === "post" && String(body.visibility || "public") === "members_only" && bucketName !== "member-media") return fail("Members-only videos must be uploaded to private storage.", 422, origin);
+      if (bucketName === "member-media" && (purpose !== "post" || family !== "video" || String(body.visibility || "") !== "members_only")) return fail("Private storage is reserved for members-only videos.", 422, origin);
+      if (!(await storageFileExists(path, bucketName))) return fail("Upload was not found in media storage.", 422, origin);
+      const { data: uploadedBlob, error: downloadError } = await db.storage.from(bucketName).download(path);
       if (downloadError || !uploadedBlob) return fail("Uploaded media could not be verified.", 422, origin);
       if (uploadedBlob.size !== Number(body.size || 0) || (uploadedBlob.type && uploadedBlob.type !== mime)) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("Uploaded file metadata did not match the upload request.", 422, origin);
       }
       const verifiedHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", await uploadedBlob.arrayBuffer())));
       if (verifiedHash !== hash) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("The uploaded file fingerprint did not match its actual bytes.", 422, origin);
       }
       const match = await exactCopyrightMatch(verifiedHash);
       if (match) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("This exact file is registered as copyrighted and has been blocked.", 451, origin);
       }
       if (purpose === "avatar") {
@@ -1046,16 +1393,36 @@ Deno.serve(async (req: Request) => {
             .eq("id", audioTrackId).eq("user_id", current.profile.id).maybeSingle();
           if (!ownedTrack) return fail("Choose an audio track from your own library.", 403, origin);
         }
+        const visibility = String(body.visibility || "public");
+        const membershipPlanId = String(body.membershipPlanId || "");
+        if (!["public","members_only"].includes(visibility)) return fail("Choose a valid post visibility.", 422, origin);
+        if (visibility === "members_only") {
+          if (family !== "video" || !/^[0-9a-f-]{36}$/i.test(membershipPlanId)) {
+            return fail("Members-only publishing requires a video and an active membership plan.", 422, origin);
+          }
+          if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Members-only videos unlock at 20,000 followers.", 403, origin);
+          const [{ data: plan }, { data: connection }] = await Promise.all([
+            db.from("membership_plans").select("id").eq("id", membershipPlanId)
+              .eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
+            db.from("creator_payment_connections").select("provider,billing_consent_at")
+              .eq("creator_id", current.profile.id).maybeSingle(),
+          ]);
+          if (!plan || connection?.provider !== "razorpay" || !connection?.billing_consent_at) {
+            return fail("Connect Razorpay and create an active membership plan before publishing a members-only video.", 403, origin);
+          }
+        } else if (membershipPlanId) {
+          return fail("A public post cannot be linked to a membership plan.", 422, origin);
+        }
         const { data, error } = await db.from("posts").insert({
           user_id: current.profile.id,
           title: String(body.title || "").trim().slice(0, 160),
           caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
-          sha256: hash,
+          sha256: hash, media_bucket: bucketName, visibility, membership_plan_id: visibility === "members_only" ? membershipPlanId : null,
           status: family === "video" ? "approved" : "pending",
           copyright_status: family === "video" ? "not_scanned" : "pending_manual_review",
           is_world_featured: family === "video",
-        }).select("id,kind,status").single();
+        }).select("id,kind,status,visibility,membership_plan_id").single();
         if (error) throw error;
         if (adminCurated) {
           await audit(current.profile.id, "import_rights_cleared_video", data.id, {
@@ -1067,39 +1434,201 @@ Deno.serve(async (req: Request) => {
       }
       return fail("Unknown upload purpose.", 422, origin);
     }
+    if (action === "monetization-status") {
+      const current = requireUser();
+      const followerCount = await getFollowerCount(current.profile.id);
+      const eligible = await isMonetizationUnlocked(current.profile.id);
+      const [{ data: connection, error: connectionError }, { data: plans, error: plansError }, { data: activeSubscriptions, error: activeSubscriptionsError }] = await Promise.all([
+        db.from("creator_payment_connections")
+          .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
+          .eq("creator_id", current.profile.id).maybeSingle(),
+        db.from("membership_plans")
+          .select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
+          .eq("creator_id", current.profile.id).order("created_at", { ascending: false }).limit(20),
+        db.from("subscriptions").select("membership_plan_id,current_end_at")
+          .eq("creator_id", current.profile.id).eq("status", "active"),
+      ]);
+      if (connectionError) throw connectionError;
+      if (plansError) throw plansError;
+      if (activeSubscriptionsError) throw activeSubscriptionsError;
+      const { data: latestWebhook, error: webhookError } = connection
+        ? await db.from("razorpay_webhook_events").select("processed_at,event_type")
+          .eq("creator_id", current.profile.id).like("event_type", "subscription.%")
+          .order("processed_at", { ascending: false }).limit(1).maybeSingle()
+        : { data: null, error: null };
+      if (webhookError) throw webhookError;
+      const now = Date.now();
+      const activeRows = (activeSubscriptions || []).filter((row: any) =>
+        !row.current_end_at || new Date(row.current_end_at).getTime() > now
+      );
+      const memberCountByPlan = new Map<string, number>();
+      for (const row of activeRows) memberCountByPlan.set(row.membership_plan_id,
+        (memberCountByPlan.get(row.membership_plan_id) || 0) + 1);
+      const enrichedPlans = (plans || []).map((plan: any) => ({
+        ...plan, active_members: memberCountByPlan.get(plan.id) || 0,
+      }));
+      return response({
+        followerCount, threshold: 20000, eligible,
+        connection: connection || null, plans: enrichedPlans,
+        activeMemberCount: activeRows.length,
+        webhookReady: !!latestWebhook,
+        lastWebhookAt: latestWebhook?.processed_at || null,
+      }, 200, origin);
+    }
     if (action === "connect-payment") {
       const current = requireUser();
-      if (!current.profile.is_verified) return fail("Only verified creators can connect a payment provider.", 403, origin);
-      const provider = String(body.provider || "");
-      if (!["razorpay", "stripe"].includes(provider)) return fail("Choose Razorpay or Stripe.", 422, origin);
-      let credentials: Record<string, string>;
-      if (provider === "stripe") {
-        const secretKey = String(body.secretKey || "").trim();
-        if (!/^sk_(test|live)_[A-Za-z0-9_]{12,}$/.test(secretKey)) return fail("Enter a valid Stripe secret key (test or live).", 422, origin);
-        credentials = { secretKey };
-      } else {
-        const keyId = String(body.keyId || "").trim();
-        const keySecret = String(body.keySecret || "").trim();
-        if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
-          return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
-        }
-        credentials = { keyId, keySecret };
+      const provider = String(body.provider || "razorpay");
+      if (provider !== "razorpay") return fail("VYRA channel subscriptions currently support Razorpay only.", 422, origin);
+      const followerCount = await getFollowerCount(current.profile.id);
+      if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Creator monetization unlocks at 20,000 followers. Current followers: " + followerCount.toLocaleString("en-IN") + ".", 403, origin);
+      if (body.billingConsent !== true || String(body.billingConsentVersion || "") !== "vyra-razorpay-consent-v1") {
+        return fail("Explicitly accept the Razorpay credential-storage and subscription-billing consent before continuing.", 422, origin);
       }
+      const keyId = String(body.keyId || "").trim();
+      const keySecret = String(body.keySecret || "").trim();
+      if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
+        return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
+      }
+      const credentials = { keyId, keySecret, webhookSecret: randomSecret(32) };
+      // Verify the supplied credentials with Razorpay before saving them.
+      await razorpayRequest(credentials, "plans?count=1");
       const encrypted = await encryptCredentials(JSON.stringify(credentials));
+      const consentAt = new Date().toISOString();
       const { error } = await db.from("creator_payment_connections").upsert({
-        creator_id: current.profile.id, provider, encrypted_credentials: encrypted,
-        connected_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        creator_id: current.profile.id, provider: "razorpay", encrypted_credentials: encrypted,
+        billing_consent_at: consentAt, billing_consent_version: "vyra-razorpay-consent-v1",
+        connected_at: consentAt, updated_at: consentAt,
       }, { onConflict: "creator_id" });
       if (error) throw error;
-      await audit(current.profile.id, "connect_creator_payment_provider", current.profile.id, { provider });
-      return response({ ok: true, provider }, 200, origin);
+      const webhookUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator_id=" + current.profile.id;
+      await audit(current.profile.id, "connect_creator_razorpay", current.profile.id, {
+        provider: "razorpay", followerCount, billingConsentVersion: "vyra-razorpay-consent-v1",
+      });
+      // Show this per-creator webhook secret once. It is stored only inside the encrypted credentials blob.
+      return response({ ok: true, provider: "razorpay", connectedAt: consentAt, webhookUrl, webhookSecret: credentials.webhookSecret }, 200, origin);
+    }
+    if (action === "payment-webhook-config") {
+      const current = requireUser();
+      const { credentials } = await getMonetizationConnection(current.profile.id);
+      if (!credentials.webhookSecret) return fail("Webhook secret is missing; reconnect Razorpay to create a new one.", 409, origin);
+      const webhookUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator_id=" + current.profile.id;
+      return response({ webhookUrl, webhookSecret: credentials.webhookSecret }, 200, origin);
     }
     if (action === "payment-status") {
       const current = requireUser();
       const { data, error } = await db.from("creator_payment_connections")
-        .select("provider,connected_at,updated_at").eq("creator_id", current.profile.id).maybeSingle();
+        .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
+        .eq("creator_id", current.profile.id).maybeSingle();
       if (error) throw error;
       return response({ connection: data || null }, 200, origin);
+    }
+    if (action === "membership-plan-create") {
+      const current = requireUser();
+      const { followerCount, credentials } = await getMonetizationConnection(current.profile.id);
+      const name = String(body.name || "").trim().slice(0, 60);
+      const description = String(body.description || "").trim().slice(0, 240);
+      const amount = Number(body.amountRupees);
+      const period = String(body.period || "monthly");
+      const interval = Number(body.interval || 1);
+      const features = Array.isArray(body.features)
+        ? body.features.map((item: unknown) => String(item).trim().slice(0, 100)).filter(Boolean).slice(0, 8)
+        : [];
+      if (name.length < 2 || !Number.isFinite(amount) || amount < 1 || amount > 1000000
+        || !["monthly","yearly"].includes(period) || !Number.isInteger(interval) || interval < 1 || interval > 12) {
+        return fail("Enter a plan name, a price of ₹1–₹10,00,000, and a valid monthly or yearly billing interval.", 422, origin);
+      }
+      const amountPaise = Math.round(amount * 100);
+      const razorpayPlan = await razorpayRequest(credentials, "plans", {
+        period, interval,
+        item: { name, description: description || name, amount: amountPaise, currency: "INR" },
+        notes: { vyra_creator_id: current.profile.id, vyra_product: "channel_membership" },
+      });
+      if (!razorpayPlan?.id) throw new Error("Razorpay did not return a plan ID.");
+      const { data: plan, error } = await db.from("membership_plans").insert({
+        creator_id: current.profile.id, name, description, features, amount_paise: amountPaise,
+        currency: "INR", period, interval, razorpay_plan_id: razorpayPlan.id,
+      }).select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at").single();
+      if (error) throw error;
+      await audit(current.profile.id, "create_membership_plan", plan.id, { amountPaise, period, interval, followerCount });
+      return response({ plan }, 201, origin);
+    }
+    if (action === "membership-plan-toggle") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      const isActive = body.isActive === true;
+      if (!/^[0-9a-f-]{36}$/i.test(planId)) return fail("Choose a valid membership tier.", 422, origin);
+      const { data: plan, error } = await db.from("membership_plans")
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq("id", planId).eq("creator_id", current.profile.id)
+        .select("id,is_active").maybeSingle();
+      if (error) throw error;
+      if (!plan) return fail("Membership tier not found.", 404, origin);
+      await audit(current.profile.id, isActive ? "activate_membership_plan" : "pause_membership_plan", plan.id);
+      return response({ plan }, 200, origin);
+    }
+    if (action === "membership-plans") {
+      const current = requireUser();
+      const creatorId = String(body.creatorId || "");
+      const username = String(body.username || "").trim().toLowerCase();
+      let resolvedId = creatorId;
+      if (!resolvedId && username) {
+        const { data: creator, error } = await db.from("profiles").select("id").eq("username", username).maybeSingle();
+        if (error) throw error;
+        resolvedId = creator?.id || "";
+      }
+      if (!/^[0-9a-f-]{36}$/i.test(resolvedId)) return fail("Creator not found.", 404, origin);
+      const { data: plans, error } = await db.from("membership_plans")
+        .select("id,creator_id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
+        .eq("creator_id", resolvedId).eq("is_active", true).order("amount_paise", { ascending: true });
+      if (error) throw error;
+      const { data: activeRows, error: activeError } = await db.from("subscriptions")
+        .select("membership_plan_id,status,current_end_at").eq("subscriber_id", current.profile.id)
+        .eq("creator_id", resolvedId).eq("status", "active");
+      if (activeError) throw activeError;
+      const now = Date.now();
+      const activeIds = new Set((activeRows || []).filter((row: any) =>
+        !row.current_end_at || new Date(row.current_end_at).getTime() > now
+      ).map((row: any) => row.membership_plan_id));
+      return response({ plans: (plans || []).map((plan: any) => ({
+        ...plan, is_member: activeIds.has(plan.id), is_owner: resolvedId === current.profile.id,
+      })) }, 200, origin);
+    }
+    if (action === "membership-subscribe") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(planId)) return fail("Choose a valid membership plan.", 422, origin);
+      const { data: plan, error: planError } = await db.from("membership_plans")
+        .select("id,creator_id,name,amount_paise,period,interval,razorpay_plan_id,is_active")
+        .eq("id", planId).eq("is_active", true).maybeSingle();
+      if (planError) throw planError;
+      if (!plan || plan.creator_id === current.profile.id) return fail("This membership plan is unavailable.", 404, origin);
+      const { credentials } = await getMonetizationConnection(plan.creator_id);
+      const { data: existing, error: existingError } = await db.from("subscriptions")
+        .select("id,status,current_end_at").eq("creator_id", plan.creator_id)
+        .eq("subscriber_id", current.profile.id).eq("membership_plan_id", plan.id)
+        .in("status", ["created","authenticated","active","pending","halted"]).limit(1).maybeSingle();
+      if (existingError) throw existingError;
+      if (existing && existing.status === "active" && (!existing.current_end_at || new Date(existing.current_end_at).getTime() > Date.now())) {
+        return fail("You already have an active membership for this plan.", 409, origin);
+      }
+      const totalCount = plan.period === "monthly" ? 120 : 10;
+      const razorpaySub = await razorpayRequest(credentials, "subscriptions", {
+        plan_id: plan.razorpay_plan_id, total_count: totalCount, quantity: 1,
+        customer_notify: true,
+        notes: {
+          vyra_creator_id: plan.creator_id, vyra_subscriber_id: current.profile.id,
+          vyra_membership_plan_id: plan.id,
+        },
+      });
+      if (!razorpaySub?.id || !razorpaySub?.short_url) throw new Error("Razorpay did not return a hosted subscription checkout link.");
+      const { data: subscription, error } = await db.from("subscriptions").upsert({
+        creator_id: plan.creator_id, subscriber_id: current.profile.id, provider: "razorpay",
+        provider_subscription_id: razorpaySub.id, membership_plan_id: plan.id,
+        status: String(razorpaySub.status || "created"), updated_at: new Date().toISOString(),
+      }, { onConflict: "provider_subscription_id" })
+        .select("id,provider_subscription_id,status,membership_plan_id").single();
+      if (error) throw error;
+      return response({ subscription, checkoutUrl: razorpaySub.short_url }, 201, origin);
     }
     if (action === "list-audio") {
       const current = requireUser();

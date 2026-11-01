@@ -8,11 +8,11 @@ import {
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus, Trash2,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
   Share2, Copy, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
-  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
+  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2, Users,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, generateVideoCopy, isReelVideo, maxBytesFor, videoDuration } from './lib/media';
-import { uploadChatAttachment } from './lib/api';
+import { uploadChatAttachment, uploadGroupChatAttachment } from './lib/api';
 import {
   unlockE2EEIdentity, deriveConversationKey, decryptText, decryptFile,
   type E2EEIdentity, type StoredE2EEIdentity,
@@ -26,6 +26,7 @@ type Post = {
   id: string; title?: string; caption: string; media_url: string; media_type: 'image' | 'video';
   kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
   comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; saved?: boolean; is_world_featured?: boolean;
+  visibility?: 'public' | 'members_only'; membership_plan_id?: string | null; is_locked?: boolean;
 };
 type Story = { id: string; media_url: string; media_type: 'image' | 'video'; caption: string; author: User; created_at: string };
 type Tab = 'home' | 'reels' | 'explore' | 'messages' | 'profile' | 'notifications' | 'saved' | 'settings' | 'admin';
@@ -34,11 +35,14 @@ type DMMessage = {
   message_type?: 'text' | 'image' | 'voice' | 'shared_post'; media_url?: string | null;
   attachment_iv?: string | null; attachment_mime?: string | null; e2ee_version?: number;
   shared_post?: { id: string; caption: string; media_url: string; media_type: 'image' | 'video'; kind: string; author: User } | null;
+  sender?: User | null;
 };
 type DMConversation = {
   id: string; status: 'pending' | 'accepted' | 'declined'; requester_id: string;
   created_at: string; last_message_at: string; otherUser: User;
   last_message: { content: string; sender_id: string; created_at: string; preview?: string } | null;
+  type?: 'direct' | 'group'; is_group?: boolean; group_id?: string; group_name?: string;
+  group_member_count?: number; group_role?: 'admin' | 'member';
 };
 type UpdatePhase = 'idle' | 'checking' | 'latest' | 'available' | 'downloading' | 'ready' | 'error';
 type UpdateUiState = {
@@ -266,12 +270,17 @@ const PostCard = memo(function PostCard({ post, token, onLike, onSave, onComment
       setComment(text);
     } finally { setCommentBusy(false); }
   }
+  const isLocked = !!post.is_locked;
   return <article className="post-card">
     <div className="post-head"><button className="post-author" onClick={() => onProfile(post.author)}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <VerifiedBadge />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
-    <div className="post-media">{post.media_type === 'video' ? <VYRAPlayer src={post.media_url} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onDoubleTap={() => { if (!post.liked) onLike(post); }} onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
-    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div>{post.media_type === 'video' && <button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save video'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button>}</div>
-    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
-    {showComments && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
+    <div className="post-media">{isLocked
+      ? <div className="members-locked-media"><span><Crown size={30} /></span><b>Members-only video</b><p>Join this creator’s channel to unlock the full video and exclusive posts.</p><button type="button" className="button button-primary" onClick={() => onProfile(post.author)}>Explore memberships <span>↗</span></button></div>
+      : post.media_type === 'video' ? <VYRAPlayer src={post.media_url || ''} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onDoubleTap={() => { if (!post.liked) onLike(post); }} onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url || ''} alt={post.caption || 'Creator post'} loading="lazy" />}
+      {!isLocked && post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}
+      {!isLocked && post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
+    {!isLocked && <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div>{post.media_type === 'video' && <button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save video'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button>}</div>}
+    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p>{!isLocked && <button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button>}</div>
+    {showComments && !isLocked && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
   </article>;
 });
 
@@ -295,10 +304,18 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
   const [rights, setRights] = useState(false);
   const [tracks, setTracks] = useState<any[]>([]);
   const [audioTrackId, setAudioTrackId] = useState('');
+  const [visibility, setVisibility] = useState<'public' | 'members_only'>('public');
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipPlanId, setMembershipPlanId] = useState('');
   const [bulkVideos, setBulkVideos] = useState<BulkVideoItem[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
+  useEffect(() => {
+    callApi<{ plans: any[] }>('monetization-status', {}, token)
+      .then(result => setMembershipPlans((result.plans || []).filter(plan => plan.is_active)))
+      .catch(() => setMembershipPlans([]));
+  }, [token]);
 
   function patchBulkVideo(id: string, patch: Partial<BulkVideoItem>) {
     setBulkVideos(current => current.map(item => item.id === id ? { ...item, ...patch } : item));
@@ -356,6 +373,7 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
           durationSeconds: item.durationSeconds,
           category: classifyVideo(item.durationSeconds),
           rightsConfirmation: 'I own or have permission to publish this media.',
+          visibility, membershipPlanId: visibility === 'members_only' ? membershipPlanId : undefined,
         });
         patchBulkVideo(item.id, { status: 'published', error: undefined });
         published++;
@@ -393,6 +411,8 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
         durationSeconds: duration, category,
         rightsConfirmation: 'I own or have permission to publish this media.',
         audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined,
+        visibility: kind === 'post' ? visibility : 'public',
+        membershipPlanId: kind === 'post' && visibility === 'members_only' ? membershipPlanId : undefined,
       });
       const isVideoPost = kind === 'post' && file.type.startsWith('video/');
       setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : isVideoPost ? 'Video published instantly to VYRA and today’s World Feed.' : 'Photo submitted for community review.');
@@ -442,19 +462,21 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
         <p className="microcopy bulk-generator-note">VYRA creates starter copy from each filename and video duration. It does not watch or understand the clip; edit the generated title and description to describe what happens in your video. No external AI service is used.</p>
         <label className="check-line"><input type="checkbox" checked={rights} disabled={bulkBusy} onChange={e => setRights(e.target.checked)} /> I own these videos or have permission to publish all selected content, including audio.</label>
         {message && <div className={message.includes('failed;') ? 'form-error' : message.includes('published successfully') || message.includes('video(s) published') ? 'notice-success' : 'form-error'}>{message}</div>}
-        <button className="button button-primary button-wide" onClick={submitBulk} disabled={bulkBusy || busy || !rights || !pendingCount}>
+        <button className="button button-primary button-wide" onClick={submitBulk} disabled={bulkBusy || busy || !rights || !pendingCount || (visibility === 'members_only' && !membershipPlanId)}>
           {bulkBusy ? 'Publishing ' + bulkProgress.done + ' / ' + bulkProgress.total + '…' : 'Publish ' + pendingCount + ' queued video(s)'}
           <span>↗</span>
         </button>
       </> : <>
         <label className="file-drop"><ImagePlus size={28} /><b>{file ? file.name : 'Choose your media'}</b><span>Photo or video · up to 50 MB per file · MP4 supported</span><input type="file" accept="image/jpeg,image/png,image/webp,video/mp4,video/webm" onChange={e => setFile(e.target.files?.[0] || null)} /></label>
         <label className="modal-label">CAPTION<textarea rows={3} value={caption} onChange={e => setCaption(e.target.value)} placeholder="Give this moment a little context…" maxLength={kind === 'story' ? 500 : 2200} /></label>
+        {kind === 'post' && membershipPlans.length > 0 && <label className="modal-label">WHO CAN WATCH?<select value={visibility} onChange={e => setVisibility(e.target.value as 'public' | 'members_only')}><option value="public">Everyone · Public post</option><option value="members_only">Channel members only</option></select></label>}
+        {kind === 'post' && visibility === 'members_only' && <label className="modal-label">MEMBERSHIP TIER<select value={membershipPlanId} onChange={e => setMembershipPlanId(e.target.value)}><option value="">Choose a tier</option>{membershipPlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · ₹{(plan.amount_paise / 100).toLocaleString('en-IN')} / {plan.period}</option>)}</select></label>}
         {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
         {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
         {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
         <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
         {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
-        <button className="button button-primary button-wide" onClick={submitSingle} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
+        <button className="button button-primary button-wide" onClick={submitSingle} disabled={busy || (kind === 'post' && visibility === 'members_only' && !membershipPlanId)}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : visibility === 'members_only' ? 'Publish for members' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
       </>}
     </div>
   </div>;
@@ -892,7 +914,8 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
   const resumedProgressRef = useRef<{ postId: string; currentTime: number } | null>(null);
   const progressStorageKey = 'vyra-reels-progress:' + userId;
   const [commentPost, setCommentPost] = useState<Post | null>(null);
-  const postIdSignature = posts.map(post => post.id).join('|');
+  const visiblePosts = posts.filter(post => !post.is_locked);
+  const postIdSignature = visiblePosts.map(post => post.id).join('|');
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
@@ -1001,10 +1024,10 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
     return () => observer.disconnect();
   }, [postIdSignature, onView, soundEnabled]);
 
-  if (!posts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
+  if (!visiblePosts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
   return <>
     <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
-      {posts.map(post => <article className="reel-screen" key={post.id}>
+      {visiblePosts.map(post => <article className="reel-screen" key={post.id}>
         <VYRAPlayer src={post.media_url} postId={post.id} soundEnabled={soundEnabled} autoPlay loop className="reel-video-player" showTimeline={false} onDoubleTap={() => { if (!post.liked) onLike(post); }} />
         <div className="reel-shade" />
         <div className="reel-overlay">
@@ -1039,6 +1062,8 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
 
 function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
   const [posts, setPosts] = useState<Post[]>([]);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipBusy, setMembershipBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [display, setDisplay] = useState(profile.display_name);
   const [bio, setBio] = useState(profile.bio);
@@ -1046,6 +1071,22 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
   const [message, setMessage] = useState('');
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   useEffect(() => { callApi<{ posts: Post[] }>('profile-posts', { username: profile.username }, token).then(r => setPosts(r.posts)).catch(e => setMessage(e.message)); }, [profile.username, token]);
+  useEffect(() => {
+    callApi<{ plans: any[] }>('membership-plans', { username: profile.username }, token)
+      .then(result => setMembershipPlans(result.plans || []))
+      .catch(() => setMembershipPlans([]));
+  }, [profile.username, token]);
+  async function joinMembership(plan: any) {
+    if (own || membershipBusy) return;
+    setMembershipBusy(plan.id);
+    try {
+      const result = await callApi<{ checkoutUrl: string }>('membership-subscribe', { planId: plan.id }, token);
+      window.location.assign(result.checkoutUrl);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not start this membership.');
+      setMembershipBusy(null);
+    }
+  }
   async function removeCreatorVideo(post: Post) {
     if (!own || post.media_type !== 'video' || deletingPostId) return;
     if (!window.confirm('Delete this video from your creator wall? This cannot be undone.')) return;
@@ -1081,8 +1122,15 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
       {!editing && <><b>{profile.display_name}</b><p>{profile.bio || 'Creating my own little corner of the internet.'}</p><span className="verified-caption">{profile.is_verified ? 'Verified creator' : 'Creator on the rise'}</span></>}
       {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
       {message && <div className="form-error">{message}</div>}
-    </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
-    {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted playsInline preload="metadata" /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span>{own && p.media_type === 'video' && <button type="button" className="profile-tile-delete" title="Delete your video" aria-label="Delete your video" disabled={deletingPostId === p.id || !!deletingPostId} onClick={() => void removeCreatorVideo(p)}>{deletingPostId === p.id ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}</button>}</div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
+    </div></div>
+    {membershipPlans.length > 0 && <section className="creator-memberships"><div className="creator-memberships-heading"><div><p className="eyebrow">SUPPORT THE CREATOR</p><h3>{own ? 'Your membership tiers' : 'Join the community'}</h3><p>Exclusive videos and benefits from this channel.</p></div><Crown size={24} /></div><div className="creator-membership-grid">
+      {membershipPlans.map(plan => <article className="creator-membership-card" key={plan.id}><span className="creator-tier-label">VYRA MEMBERSHIP</span><h4>{plan.name}</h4><p>{plan.description || 'Get access to creator-only content and community benefits.'}</p><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')}<small> / {plan.interval > 1 ? plan.interval + ' ' : ''}{plan.period}</small></strong>
+        {Array.isArray(plan.features) && plan.features.length > 0 && <ul>{plan.features.map((feature: string, index: number) => <li key={index}><Check size={13} />{feature}</li>)}</ul>}
+        {own ? <span className="creator-member-owned">Your tier</span> : plan.is_member ? <span className="creator-member-owned"><Check size={14} /> Active member</span> : <button className="button button-primary" onClick={() => void joinMembership(plan)} disabled={membershipBusy !== null}>{membershipBusy === plan.id ? 'Opening secure checkout…' : 'Join membership'}</button>}
+      </article>)}
+    </div></section>}
+    <div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
+    {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.is_locked ? <div className="profile-locked-tile"><Crown size={23} /><b>Members only</b><small>Join to unlock</small></div> : p.media_type === 'video' ? <video src={p.media_url || ''} muted playsInline preload="metadata" /> : <img src={p.media_url || ''} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span>{own && p.media_type === 'video' && <button type="button" className="profile-tile-delete" title="Delete your video" aria-label="Delete your video" disabled={deletingPostId === p.id || !!deletingPostId} onClick={() => void removeCreatorVideo(p)}>{deletingPostId === p.id ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}</button>}</div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
   </section>;
 }
 
@@ -1110,6 +1158,11 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
   const [isRecording, setIsRecording] = useState(false);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
+  const [groupModalOpen, setGroupModalOpen] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupUsernames, setGroupUsernames] = useState('');
+  const [groupEditId, setGroupEditId] = useState<string | null>(null);
+  const [groupBusy, setGroupBusy] = useState(false);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -1143,7 +1196,10 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     if (!selectedId) { setMessages([]); return; }
     let active = true;
     const loadMessages = async () => {
-      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
+      const isGroup = selectedId.startsWith('group:');
+      const result = isGroup
+        ? await callApi<{ messages: DMMessage[] }>('dm-group-messages', { groupId: selectedId.slice(6) }, token)
+        : await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
       if (active) {
         setMessages(current => current.length === result.messages.length
           && current.every((message, index) => message.id === result.messages[index]?.id)
@@ -1294,9 +1350,15 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     const text = composer.trim(); setBusy(true);
     try {
       setComposer('');
-      const result = await callApi<{ message: DMMessage }>('dm-send', { conversationId: selected.id, content: text, messageType: 'text' }, token);
-      setMessages(current => [...current.filter(message => message.id !== result.message.id), result.message]
-        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+      if (selected.is_group && selected.group_id) {
+        await callApi('dm-group-send', { groupId: selected.group_id, content: text, messageType: 'text' }, token);
+        const result = await callApi<{ messages: DMMessage[] }>('dm-group-messages', { groupId: selected.group_id }, token);
+        setMessages(result.messages);
+      } else {
+        const result = await callApi<{ message: DMMessage }>('dm-send', { conversationId: selected.id, content: text, messageType: 'text' }, token);
+        setMessages(current => [...current.filter(message => message.id !== result.message.id), result.message]
+          .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+      }
       setSyncStatus('live'); await loadInbox();
     } catch (error) {
       setComposer(current => current || text);
@@ -1321,7 +1383,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     setDeletingMessageId(message.id);
     try {
       const result = await callApi<{ ok: boolean; storageCleanupPending?: boolean }>(
-        'dm-delete-message', { messageId: message.id }, token,
+        selected?.is_group ? 'dm-group-delete-message' : 'dm-delete-message', { messageId: message.id }, token,
       );
       setMessages(current => current.filter(item => item.id !== message.id));
       await loadInbox();
@@ -1340,10 +1402,18 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     if (file.size > 15 * 1024 * 1024) throw new Error('Attachments must be 15 MB or smaller.');
     setBusy(true);
     try {
-      const path = await uploadChatAttachment(file, selected.id, token, messageType, mime);
-      await callApi('dm-send', { conversationId: selected.id, content: messageType === 'image' ? 'Photo' : 'Voice note', messageType, attachmentPath: path, attachmentMime: mime }, token);
-      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
-      setMessages(result.messages); await loadInbox();
+      if (selected.is_group && selected.group_id) {
+        const path = await uploadGroupChatAttachment(file, selected.group_id, token, messageType, mime);
+        await callApi('dm-group-send', { groupId: selected.group_id, content: messageType === 'image' ? 'Photo' : 'Voice note', messageType, attachmentPath: path, attachmentMime: mime }, token);
+        const result = await callApi<{ messages: DMMessage[] }>('dm-group-messages', { groupId: selected.group_id }, token);
+        setMessages(result.messages);
+      } else {
+        const path = await uploadChatAttachment(file, selected.id, token, messageType, mime);
+        await callApi('dm-send', { conversationId: selected.id, content: messageType === 'image' ? 'Photo' : 'Voice note', messageType, attachmentPath: path, attachmentMime: mime }, token);
+        const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
+        setMessages(result.messages);
+      }
+      await loadInbox();
     } finally { setBusy(false); }
   }
 
@@ -1390,17 +1460,45 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
   }, []);
 
   async function startCall(callType: 'audio' | 'video') {
-    if (!selected || selected.status !== 'accepted') return;
+    if (!selected || selected.status !== 'accepted' || selected.is_group) return;
     try {
       const result = await callApi<{ call: any }>('dm-call-start', { conversationId: selected.id, callType }, token);
       onStartCall(result.call);
     } catch (error) { onToast(error instanceof Error ? error.message : 'Could not start call.'); }
   }
 
+  async function saveGroup(event: FormEvent) {
+    event.preventDefault();
+    setGroupBusy(true);
+    try {
+      const usernames = groupUsernames.split(/[\\s,;]+/).map(value => value.trim()).filter(Boolean);
+      if (groupEditId) {
+        await callApi('dm-group-add-members', { groupId: groupEditId, usernames }, token);
+        onToast('New people added to the group.');
+      } else {
+        const result = await callApi<{ group: { id: string; name: string } }>('dm-group-create', { name: groupName, usernames }, token);
+        onToast('Group created. Invite your community into the chat.');
+        await loadInbox();
+        setSelectedId('group:' + result.group.id);
+      }
+      setGroupModalOpen(false); setGroupName(''); setGroupUsernames(''); setGroupEditId(null);
+      await loadInbox();
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not update this group.'); }
+    finally { setGroupBusy(false); }
+  }
+  async function leaveGroup() {
+    if (!selected?.is_group || !selected.group_id) return;
+    if (!window.confirm('Leave this group? You will no longer see its messages.')) return;
+    try {
+      await callApi('dm-group-leave', { groupId: selected.group_id }, token);
+      setSelectedId(null); setMessages([]); await loadInbox();
+      onToast('You left the group.');
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not leave this group.'); }
+  }
   const conversationButton = (item: DMConversation, label?: string) =>
     <button key={item.id} className={'dm-list-item ' + (selectedId === item.id ? 'active' : '')} onClick={() => { setComposeTarget(null); setSelectedId(item.id); }}>
-      <Avatar user={item.otherUser} size="md" />
-      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.preview || 'Start a conversation'}</small></span>
+      {item.is_group ? <span className="dm-group-avatar"><Users size={18} /></span> : <Avatar user={item.otherUser} size="md" />}
+      <span className="dm-list-copy"><b>{item.is_group ? item.group_name : '@' + item.otherUser.username} {!item.is_group && item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.preview || (item.is_group ? (item.group_member_count || 0) + ' members' : 'Start a conversation')}</small></span>
       <small className="dm-list-time">{ago(item.last_message_at)}</small>
     </button>;
 
@@ -1415,7 +1513,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     {messages.some(message => message.e2ee_version === 1) && legacyKeyChecked && !storedKey && !keyLoading && <div className="legacy-restore-note">Some older messages need the private key used when they were sent. This account has no saved legacy key, so those specific messages cannot be decoded. New messages are unaffected.</div>}
     <div className="dm-layout">
       <aside className="dm-inbox">
-        <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => setSyncStatus('reconnecting'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
+        <div className="dm-inbox-head"><b>Inbox</b><div className="dm-inbox-head-actions"><button className="icon-button" title="Create group" aria-label="Create group" onClick={() => { setGroupEditId(null); setGroupName(''); setGroupUsernames(''); setGroupModalOpen(true); }}><Users size={16} /></button><button className="icon-button" onClick={() => loadInbox().catch(() => setSyncStatus('reconnecting'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div></div>
         <div className="dm-inbox-search"><Search size={15} /><input value={inboxSearch} onChange={event => setInboxSearch(event.target.value)} placeholder="Search people or chats" aria-label="Search conversations" /></div>
         {loading && <p className="dm-empty-note">Loading your inbox…</p>}
         {incoming.filter(matchesInbox).length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.filter(matchesInbox).length}</span></h4>{incoming.filter(matchesInbox).map(item => conversationButton(item, 'Message request'))}</div>}
@@ -1432,10 +1530,12 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
           <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={16} /> Send request</button></form>
         </> : selected ? <>
           <div className="dm-thread-head">
-            <Avatar user={selected.otherUser} size="md" />
-            <div className="dm-thread-title"><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'Active conversation' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Message request'}</small></div>
+            {selected.is_group ? <span className="dm-group-avatar dm-group-avatar-large"><Users size={20} /></span> : <Avatar user={selected.otherUser} size="md" />}
+            <div className="dm-thread-title"><b>{selected.is_group ? selected.group_name : '@' + selected.otherUser.username + (selected.otherUser.is_verified ? ' ✓' : '')}</b><small>{selected.is_group ? 'Group · ' + (selected.group_member_count || 0) + ' members' : selected.status === 'accepted' ? 'Active conversation' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Message request'}</small></div>
             {selected.status === 'accepted' && <span className={'dm-sync-pill dm-sync-' + syncStatus}><i />{syncStatus === 'live' ? 'Live' : syncStatus === 'syncing' ? 'Syncing' : 'Reconnecting'}</span>}
-            {selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
+            {selected.is_group && selected.group_role === 'admin' && <button className="icon-button" title="Add people" aria-label="Add people" onClick={() => { setGroupEditId(selected.group_id || null); setGroupName(selected.group_name || ''); setGroupUsernames(''); setGroupModalOpen(true); }}><Plus size={18} /></button>}
+            {selected.is_group && <button className="icon-button" title="Leave group" aria-label="Leave group" onClick={() => void leaveGroup()}><LogOut size={17} /></button>}
+            {!selected.is_group && selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
           </div>
           {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
           <div className="dm-messages" ref={messagesRef} aria-live="polite" aria-relevant="additions">
@@ -1447,6 +1547,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
                 </div>}
                 {message.message_type === 'image' && attachmentUrls[message.id] && <img className="dm-attachment-image" src={attachmentUrls[message.id]} alt="Shared photo" />}
                 {message.message_type === 'voice' && attachmentUrls[message.id] && <audio className="dm-voice-player" controls src={attachmentUrls[message.id]} />}
+                {selected.is_group && message.sender_id !== user.id && message.sender && <b className="dm-group-sender">@{message.sender.username}</b>}
                 <p>{decoded[message.id] || message.content}</p>
                 <small>{ago(message.created_at)} {message.e2ee_version === 1 && <span title="Older encrypted message">Legacy</span>}</small>
                 <div className="dm-bubble-tools">
@@ -1458,8 +1559,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
           </div>
           {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}>
             <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
-            <button type="button" className="dm-attach-btn" title="Send a photo" onClick={() => photoInputRef.current?.click()} disabled={busy}><Image size={19} /></button>
-            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
+            <button type="button" className="dm-attach-btn" title={selected.is_group ? "Share a photo with the group" : "Send a photo"} onClick={() => photoInputRef.current?.click()} disabled={busy}><Image size={19} /></button>
+            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : selected.is_group ? 'Record a group voice note' : 'Record voice note'} onClick={toggleRecording} disabled={busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
             <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={1000} placeholder="Message… (Enter to send, Shift + Enter for a new line)" disabled={busy} />
             <button className="button button-primary dm-send-button" disabled={busy || !composer.trim()} aria-label="Send message"><Send size={17} /></button>
           </form> : selected.requester_id === user.id
@@ -1468,6 +1569,13 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
         </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a message request or accepted chat, or visit a creator profile to send the first message.</p></div>}
       </section>
     </div>
+    {groupModalOpen && <div className="modal-backdrop" onMouseDown={event => event.target === event.currentTarget && !groupBusy && setGroupModalOpen(false)}><form className="group-modal" onSubmit={saveGroup}>
+      <div className="modal-top"><div><p className="eyebrow">YOUR COMMUNITY, TOGETHER</p><h2>{groupEditId ? 'Add people to group' : 'Create a group chat'}</h2></div><button type="button" className="icon-button" onClick={() => setGroupModalOpen(false)} disabled={groupBusy}><X /></button></div>
+      {!groupEditId && <label className="modal-label">GROUP NAME<input value={groupName} onChange={event => setGroupName(event.target.value)} maxLength={60} required minLength={2} placeholder="Creator circle" /></label>}
+      <label className="modal-label">ADD CREATORS BY USERNAME<input value={groupUsernames} onChange={event => setGroupUsernames(event.target.value)} required placeholder="@maya, @arjun, @creator…" /></label>
+      <p className="microcopy">Separate usernames with commas or spaces. Groups support up to 30 people; admins can add members later.</p>
+      <button className="button button-primary button-wide" disabled={groupBusy || !groupUsernames.trim() || (!groupEditId && !groupName.trim())}>{groupBusy ? 'Saving group…' : groupEditId ? 'Add members' : 'Create group chat'}</button>
+    </form></div>}
   </section>;
 }
 
@@ -1645,24 +1753,82 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
   const [rights, setRights] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [provider, setProvider] = useState<'razorpay' | 'stripe'>('razorpay');
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
-  const [paymentStatus, setPaymentStatus] = useState<any>(null);
-  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'payments' | 'app' | 'about'>('account');
+  const [monetization, setMonetization] = useState<any>(null);
+  const [monetizeStarted, setMonetizeStarted] = useState(false);
+  const [billingConsent, setBillingConsent] = useState(false);
+  const [webhookDetails, setWebhookDetails] = useState<{ webhookUrl: string; webhookSecret: string } | null>(null);
+  const [planName, setPlanName] = useState('');
+  const [planDescription, setPlanDescription] = useState('');
+  const [planPrice, setPlanPrice] = useState('99');
+  const [planPeriod, setPlanPeriod] = useState<'monthly' | 'yearly'>('monthly');
+  const [planInterval, setPlanInterval] = useState('1');
+  const [planFeatures, setPlanFeatures] = useState('Members-only videos\nExclusive creator updates');
+  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'monetization' | 'app' | 'about'>('account');
   const [paymentMessage, setPaymentMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
-  useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
+  const refreshMonetization = useCallback(async () => {
+    const result = await callApi<any>('monetization-status', {}, token);
+    setMonetization(result);
+    return result;
+  }, [token]);
+  useEffect(() => { refreshMonetization().catch(() => undefined); }, [refreshMonetization]);
   async function savePaymentKeys() {
+    if (!billingConsent) return setPaymentMessage('Accept the billing and secure-storage consent before continuing.');
     setBusy(true); setPaymentMessage('');
     try {
-      const payload = provider === 'razorpay' ? { provider, keyId, keySecret } : { provider, secretKey: keySecret };
-      await callApi('connect-payment', payload, token);
+      const result = await callApi<{ webhookUrl: string; webhookSecret: string }>('connect-payment', {
+        provider: 'razorpay', keyId, keySecret, billingConsent: true,
+        billingConsentVersion: 'vyra-razorpay-consent-v1',
+      }, token);
       setKeyId(''); setKeySecret('');
-      setPaymentStatus({ provider, connected_at: new Date().toISOString() });
-      setPaymentMessage('Your payment credentials are encrypted and stored on the server.');
-    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not save payment credentials.'); }
+      setWebhookDetails({ webhookUrl: result.webhookUrl, webhookSecret: result.webhookSecret });
+      setMonetizeStarted(false);
+      setBillingConsent(false);
+      await refreshMonetization();
+      setPaymentMessage('Razorpay account connected. Finish the webhook setup below before accepting members.');
+    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not connect Razorpay.'); }
     finally { setBusy(false); }
+  }
+  async function toggleMembershipPlan(plan: any) {
+    setBusy(true); setPaymentMessage('');
+    try {
+      await callApi('membership-plan-toggle', { planId: plan.id, isActive: !plan.is_active }, token);
+      await refreshMonetization();
+      setPaymentMessage(plan.is_active ? 'Tier paused. Existing active subscriptions are not automatically cancelled.' : 'Tier is active again and can accept new members.');
+    } catch (error) {
+      setPaymentMessage(error instanceof Error ? error.message : 'Could not update this tier.');
+    } finally { setBusy(false); }
+  }
+  async function createMembershipPlan() {
+    if (!planName.trim()) return setPaymentMessage('Enter a membership tier name.');
+    setBusy(true); setPaymentMessage('');
+    try {
+      await callApi('membership-plan-create', {
+        name: planName, description: planDescription, amountRupees: Number(planPrice),
+        period: planPeriod, interval: Number(planInterval),
+        features: planFeatures.split(/[\\n,]+/).map(value => value.trim()).filter(Boolean),
+      }, token);
+      setPlanName(''); setPlanDescription('');
+      await refreshMonetization();
+      setPaymentMessage('Your membership tier is live on VYRA.');
+    } catch (error) {
+      setPaymentMessage(error instanceof Error ? error.message : 'Could not create this tier.');
+    } finally { setBusy(false); }
+  }
+  async function showWebhookDetails() {
+    setBusy(true); setPaymentMessage('');
+    try {
+      const result = await callApi<{ webhookUrl: string; webhookSecret: string }>('payment-webhook-config', {}, token);
+      setWebhookDetails(result);
+    } catch (error) {
+      setPaymentMessage(error instanceof Error ? error.message : 'Could not load the webhook setup.');
+    } finally { setBusy(false); }
+  }
+  async function copyWebhookValue(value: string) {
+    try { await navigator.clipboard.writeText(value); setPaymentMessage('Copied to clipboard.'); }
+    catch { setPaymentMessage('Clipboard access is unavailable on this device.'); }
   }
   async function addTrack() {
     if (!audioFile || !title.trim() || !rights) return setMessage('Choose an audio file, add a title and confirm the rights.');
@@ -1682,7 +1848,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         <button className={activeSection === 'notifications' ? 'active' : ''} onClick={() => setActiveSection('notifications')}><Bell /> Notifications</button>
         <button className={activeSection === 'privacy' ? 'active' : ''} onClick={() => setActiveSection('privacy')}><ShieldCheck /> Privacy</button>
         <button className={activeSection === 'creator' ? 'active' : ''} onClick={() => setActiveSection('creator')}><Music2 /> Creator tools</button>
-        <button className={activeSection === 'payments' ? 'active' : ''} onClick={() => setActiveSection('payments')}><Crown /> Payments</button>
+        <button className={activeSection === 'monetization' ? 'active' : ''} onClick={() => setActiveSection('monetization')}><Crown /> Monetization</button>
         <button className={activeSection === 'app' ? 'active' : ''} onClick={() => setActiveSection('app')}><Settings /> App settings</button>
         <button className={activeSection === 'about' ? 'active' : ''} onClick={() => setActiveSection('about')}><Activity /> About VYRA</button>
       </nav>
@@ -1703,17 +1869,52 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>)}
-        {activeSection === 'payments' && (<div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
-      {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
-      <div className="settings-form">
-        <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
-        {provider === 'razorpay' && <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>}
-        <label>{provider === 'razorpay' ? 'RAZORPAY KEY SECRET' : 'STRIPE SECRET KEY'}<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder={provider === 'razorpay' ? 'Your Razorpay secret' : 'sk_test_… or sk_live_…'} autoComplete="new-password" /></label>
-        <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keySecret || (provider === 'razorpay' && !keyId)}>{busy ? 'Encrypting securely…' : 'Save payment credentials'}</button>
-        {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
-      </div>
-      <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
-    </div>)}
+        {activeSection === 'monetization' && <div className="monetization-page">
+          <div className="settings-card monetization-hero">
+            <div className="settings-card-head"><Crown /><div><h3>Monetize your channel</h3><p>Unlock paid memberships at 20,000 followers. Members can support your work through recurring Razorpay subscriptions.</p></div></div>
+            {monetization ? <>
+              <div className="monetization-progress">
+                <div><span>Follower milestone</span><b>{Number(monetization.followerCount || 0).toLocaleString('en-IN')} / 20,000</b></div>
+                <div className="monetization-progress-track"><span style={{ width: Math.min(100, Number(monetization.followerCount || 0) / 20000 * 100) + '%' }} /></div>
+              </div>
+              {monetization.eligible && <div className="monetization-stats"><div><small>ACTIVE MEMBERS</small><b>{Number(monetization.activeMemberCount || 0).toLocaleString('en-IN')}</b></div><div><small>LIVE TIERS</small><b>{(monetization.plans || []).filter((plan: any) => plan.is_active).length}</b></div><div><small>WEBHOOK</small><b className={monetization.webhookReady ? 'is-ready' : 'is-pending'}>{monetization.webhookReady ? 'Verified' : 'Setup needed'}</b></div></div>}
+              {!monetization.eligible && <div className="monetization-locked"><LockKeyhole size={23} /><div><b>Monetization is not unlocked yet</b><p>Reach 20,000 real followers. Your progress is checked by VYRA’s server, so changing a profile number cannot unlock payments.</p></div></div>}
+              {monetization.eligible && !monetization.connection && <>
+                <p className="monetization-ready-copy">You reached the milestone. Connect the Razorpay merchant account that should receive your channel membership payments.</p>
+                {!monetizeStarted
+                  ? <button className="button button-primary" onClick={() => setMonetizeStarted(true)}><Crown size={16} /> Monetize my channel</button>
+                  : <div className="settings-form monetization-connect-form">
+                    <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_… or rzp_live_…" autoComplete="off" /></label>
+                    <label>RAZORPAY KEY SECRET<input value={keySecret} onChange={e => setKeySecret(e.target.value)} type="password" placeholder="Paste your Razorpay Key Secret" autoComplete="new-password" /></label>
+                    <label className="check-line consent-check"><input type="checkbox" checked={billingConsent} onChange={e => setBillingConsent(e.target.checked)} /> I explicitly allow VYRA to store my Razorpay Key ID and Key Secret encrypted on its servers, and to use this connection to create and manage my channel membership plans and subscriptions. Subscription charges are processed by Razorpay for my merchant account, subject to Razorpay fees, settlements and terms. Members must approve recurring billing through Razorpay’s hosted checkout. I understand this connection is used only to manage my VYRA channel memberships; existing recurring subscriptions must be cancelled through Razorpay if I want billing to stop.</label>
+                    <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keyId.trim() || !keySecret.trim() || !billingConsent}>{busy ? 'Verifying Razorpay securely…' : 'Accept & connect Razorpay'}</button>
+                    <button className="button button-soft" onClick={() => { setMonetizeStarted(false); setKeyId(''); setKeySecret(''); setBillingConsent(false); }}>Cancel</button>
+                  </div>}
+              </>}
+              {monetization.eligible && monetization.connection && <>
+                <p className="payment-note"><ShieldCheck /><span><b>Razorpay connected.</b> Connection saved {monetization.connection.connected_at ? ago(monetization.connection.connected_at) : 'successfully'}. Key Secret is encrypted and never shown again.</span></p>
+                <div className={'webhook-setup-status ' + (monetization.webhookReady ? 'ready' : '')}><span className="webhook-status-dot" /><div><b>{monetization.webhookReady ? 'Webhook events verified' : 'Finish webhook setup in Razorpay'}</b><small>{monetization.webhookReady ? 'VYRA has received and verified a signed event from this merchant.' : 'Add the unique URL and secret shown when you connected Razorpay to your Razorpay Dashboard webhook settings.'}</small></div></div>
+                {!webhookDetails && <button className="button button-soft webhook-show-button" type="button" onClick={() => void showWebhookDetails()} disabled={busy}><Copy size={15} /> {busy ? 'Loading…' : 'Show webhook setup details'}</button>}
+                {webhookDetails && <div className="webhook-setup-card"><b>One-time webhook setup details</b><p>Open Razorpay Dashboard → Account & Settings → Webhooks. Add this endpoint and paste the secret. Subscribe to subscription.activated, subscription.charged, subscription.pending, subscription.halted, subscription.paused, subscription.resumed, subscription.cancelled and subscription.completed.</p><label>WEBHOOK URL<div className="copy-value"><input readOnly value={webhookDetails.webhookUrl} /><button type="button" className="button button-soft" onClick={() => void copyWebhookValue(webhookDetails.webhookUrl)}><Copy size={14} /> Copy</button></div></label><label>WEBHOOK SECRET — keep private<div className="copy-value"><input readOnly type="password" value={webhookDetails.webhookSecret} /><button type="button" className="button button-soft" onClick={() => void copyWebhookValue(webhookDetails.webhookSecret)}><Copy size={14} /> Copy</button></div></label><small>VYRA stores this secret only inside your encrypted payment credentials. It will not be shown again after you leave this screen.</small></div>}
+                <div className="settings-card membership-builder"><div className="settings-card-head"><Sparkles /><div><h3>Create a membership tier</h3><p>Set your price and the benefits subscribers receive. Plans are created in your Razorpay account.</p></div></div>
+                  <div className="settings-form">
+                    <label>TIER NAME<input value={planName} onChange={e => setPlanName(e.target.value)} maxLength={60} placeholder="Founding member" /></label>
+                    <label>DESCRIPTION<input value={planDescription} onChange={e => setPlanDescription(e.target.value)} maxLength={240} placeholder="A closer look behind the scenes" /></label>
+                    <div className="plan-billing-fields"><label>PRICE PER BILLING CYCLE (₹)<input type="number" min="1" max="1000000" step="1" value={planPrice} onChange={e => setPlanPrice(e.target.value)} /></label><label>BILLING PERIOD<select value={planPeriod} onChange={e => setPlanPeriod(e.target.value as 'monthly' | 'yearly')}><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label><label>RENEW EVERY<select value={planInterval} onChange={e => setPlanInterval(e.target.value)}>{Array.from({length:12},(_,i)=>i+1).map(value => <option key={value} value={String(value)}>{value} {planPeriod === 'monthly' ? (value === 1 ? 'month' : 'months') : (value === 1 ? 'year' : 'years')}</option>)}</select></label></div>
+                    <label>MEMBER BENEFITS — one per line<textarea rows={3} value={planFeatures} onChange={e => setPlanFeatures(e.target.value)} maxLength={800} /></label>
+                    <button className="button button-primary" onClick={createMembershipPlan} disabled={busy || !planName.trim() || Number(planPrice) < 1}>{busy ? 'Creating Razorpay plan…' : 'Create membership tier'}</button>
+                  </div>
+                </div>
+                <div className="membership-plan-list"><div className="section-title"><h3>Your tiers</h3><span>{monetization.plans?.length || 0} created</span></div>
+                  {monetization.plans?.length ? <div className="membership-plan-grid">{monetization.plans.map((plan: any) => <article className="membership-plan-card" key={plan.id}><span className="creator-tier-label">CHANNEL TIER</span><h4>{plan.name}</h4><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')} <small>/ {plan.interval > 1 ? plan.interval + ' ' : ''}{plan.period}</small></strong><p>{plan.description}</p><div className="tier-member-count"><Users size={14} /> {Number(plan.active_members || 0).toLocaleString('en-IN')} active members</div>{Array.isArray(plan.features) && <ul>{plan.features.map((feature: string, index: number) => <li key={index}><Check size={13} />{feature}</li>)}</ul><div className="tier-admin-actions"><span className={'badge-muted ' + (plan.is_active ? 'tier-active' : 'tier-paused')}>{plan.is_active ? 'Accepting members' : 'Paused'}</span><button className="button button-soft" onClick={() => void toggleMembershipPlan(plan)} disabled={busy}>{plan.is_active ? 'Pause tier' : 'Activate tier'}</button></div></article>)}</div>
+                    : <div className="empty-card compact"><Crown /><h3>Your first tier starts here.</h3><p>Create a membership above to give your biggest supporters exclusive access.</p></div>}
+                </div>
+              </>}
+            </> : <p className="microcopy">Checking your follower milestone…</p>}
+            {paymentMessage && <p className="monetization-message" role="status">{paymentMessage}</p>}
+          </div>
+          <div className="payment-note"><ShieldCheck /><span>Razorpay handles the recurring authorisation and collections. VYRA unlocks member-only media only after a signed Razorpay webhook confirms an active subscription. Key Secrets are not returned to the app after save. Start with Razorpay test keys and verify the complete flow before accepting live subscribers.</span></div>
+        </div>}
         {activeSection === 'app' && <>
           <div className="settings-card"><div className="settings-card-head"><Settings /><div><h3>App preferences</h3><p>Personalize playback and appearance.</p></div></div>
             <div className="settings-shortcut-row"><div><b>Video sound</b><small>Control audio across VYRA videos.</small></div><button className={'settings-toggle ' + (soundEnabled ? 'on' : '')} onClick={onToggleSound}>{soundEnabled ? 'Sound on' : 'Sound off'}</button></div>
