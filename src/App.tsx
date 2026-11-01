@@ -23,7 +23,7 @@ type User = {
   is_verified: boolean; follower_count: number; following_count: number; posts_count: number; is_admin?: boolean; is_following?: boolean;
 };
 type Post = {
-  id: string; title?: string; caption: string; media_url: string | null; media_type: 'image' | 'video';
+  id: string; title?: string; caption: string; media_url: string; media_type: 'image' | 'video';
   kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
   comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; saved?: boolean; is_world_featured?: boolean;
   visibility?: 'public' | 'members_only'; membership_plan_id?: string | null; is_locked?: boolean;
@@ -279,7 +279,7 @@ const PostCard = memo(function PostCard({ post, token, onLike, onSave, onComment
       {!isLocked && post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}
       {!isLocked && post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
     {!isLocked && <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div>{post.media_type === 'video' && <button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save video'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button>}</div>}
-    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
+    <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p>{!isLocked && <button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button>}</div>
     {showComments && !isLocked && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
   </article>;
 });
@@ -914,7 +914,8 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
   const resumedProgressRef = useRef<{ postId: string; currentTime: number } | null>(null);
   const progressStorageKey = 'vyra-reels-progress:' + userId;
   const [commentPost, setCommentPost] = useState<Post | null>(null);
-  const postIdSignature = posts.map(post => post.id).join('|');
+  const visiblePosts = posts.filter(post => !post.is_locked);
+  const postIdSignature = visiblePosts.map(post => post.id).join('|');
 
   useLayoutEffect(() => {
     const root = scrollerRef.current;
@@ -1023,10 +1024,10 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
     return () => observer.disconnect();
   }, [postIdSignature, onView, soundEnabled]);
 
-  if (!posts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
+  if (!visiblePosts.length) return <div className="empty-card"><Clapperboard /><h3>No Reels yet.</h3><p>Be the first to bring the energy.</p></div>;
   return <>
     <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
-      {posts.map(post => <article className="reel-screen" key={post.id}>
+      {visiblePosts.map(post => <article className="reel-screen" key={post.id}>
         <VYRAPlayer src={post.media_url} postId={post.id} soundEnabled={soundEnabled} autoPlay loop className="reel-video-player" showTimeline={false} onDoubleTap={() => { if (!post.liked) onLike(post); }} />
         <div className="reel-shade" />
         <div className="reel-overlay">
@@ -1806,6 +1807,15 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       setPaymentMessage(error instanceof Error ? error.message : 'Could not create this tier.');
     } finally { setBusy(false); }
   }
+  async function showWebhookDetails() {
+    setBusy(true); setPaymentMessage('');
+    try {
+      const result = await callApi<{ webhookUrl: string; webhookSecret: string }>('payment-webhook-config', {}, token);
+      setWebhookDetails(result);
+    } catch (error) {
+      setPaymentMessage(error instanceof Error ? error.message : 'Could not load the webhook setup.');
+    } finally { setBusy(false); }
+  }
   async function copyWebhookValue(value: string) {
     try { await navigator.clipboard.writeText(value); setPaymentMessage('Copied to clipboard.'); }
     catch { setPaymentMessage('Clipboard access is unavailable on this device.'); }
@@ -1865,7 +1875,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
                   : <div className="settings-form monetization-connect-form">
                     <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_… or rzp_live_…" autoComplete="off" /></label>
                     <label>RAZORPAY KEY SECRET<input value={keySecret} onChange={e => setKeySecret(e.target.value)} type="password" placeholder="Paste your Razorpay Key Secret" autoComplete="new-password" /></label>
-                    <label className="check-line consent-check"><input type="checkbox" checked={billingConsent} onChange={e => setBillingConsent(e.target.checked)} /> I explicitly allow VYRA to store my Razorpay Key ID and Key Secret encrypted on its servers, and to use this connection to create and manage my channel membership plans and subscriptions. Subscription charges are processed by Razorpay for my merchant account, subject to Razorpay fees, settlements and terms. Members must approve recurring billing through Razorpay’s hosted checkout. I can disconnect future use of this key in VYRA settings.</label>
+                    <label className="check-line consent-check"><input type="checkbox" checked={billingConsent} onChange={e => setBillingConsent(e.target.checked)} /> I explicitly allow VYRA to store my Razorpay Key ID and Key Secret encrypted on its servers, and to use this connection to create and manage my channel membership plans and subscriptions. Subscription charges are processed by Razorpay for my merchant account, subject to Razorpay fees, settlements and terms. Members must approve recurring billing through Razorpay’s hosted checkout. I understand this connection is used only to manage my VYRA channel memberships; existing recurring subscriptions must be cancelled through Razorpay if I want billing to stop.</label>
                     <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keyId.trim() || !keySecret.trim() || !billingConsent}>{busy ? 'Verifying Razorpay securely…' : 'Accept & connect Razorpay'}</button>
                     <button className="button button-soft" onClick={() => { setMonetizeStarted(false); setKeyId(''); setKeySecret(''); setBillingConsent(false); }}>Cancel</button>
                   </div>}
@@ -1873,12 +1883,13 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
               {monetization.eligible && monetization.connection && <>
                 <p className="payment-note"><ShieldCheck /><span><b>Razorpay connected.</b> Connection saved {monetization.connection.connected_at ? ago(monetization.connection.connected_at) : 'successfully'}. Key Secret is encrypted and never shown again.</span></p>
                 <div className={'webhook-setup-status ' + (monetization.webhookReady ? 'ready' : '')}><span className="webhook-status-dot" /><div><b>{monetization.webhookReady ? 'Webhook events verified' : 'Finish webhook setup in Razorpay'}</b><small>{monetization.webhookReady ? 'VYRA has received and verified a signed event from this merchant.' : 'Add the unique URL and secret shown when you connected Razorpay to your Razorpay Dashboard webhook settings.'}</small></div></div>
+                {!webhookDetails && <button className="button button-soft webhook-show-button" type="button" onClick={() => void showWebhookDetails()} disabled={busy}><Copy size={15} /> {busy ? 'Loading…' : 'Show webhook setup details'}</button>}
                 {webhookDetails && <div className="webhook-setup-card"><b>One-time webhook setup details</b><p>Open Razorpay Dashboard → Account & Settings → Webhooks. Add this endpoint and paste the secret. Subscribe to subscription.activated, subscription.charged, subscription.pending, subscription.halted, subscription.paused, subscription.resumed, subscription.cancelled and subscription.completed.</p><label>WEBHOOK URL<div className="copy-value"><input readOnly value={webhookDetails.webhookUrl} /><button type="button" className="button button-soft" onClick={() => void copyWebhookValue(webhookDetails.webhookUrl)}><Copy size={14} /> Copy</button></div></label><label>WEBHOOK SECRET — keep private<div className="copy-value"><input readOnly type="password" value={webhookDetails.webhookSecret} /><button type="button" className="button button-soft" onClick={() => void copyWebhookValue(webhookDetails.webhookSecret)}><Copy size={14} /> Copy</button></div></label><small>VYRA stores this secret only inside your encrypted payment credentials. It will not be shown again after you leave this screen.</small></div>}
                 <div className="settings-card membership-builder"><div className="settings-card-head"><Sparkles /><div><h3>Create a membership tier</h3><p>Set your price and the benefits subscribers receive. Plans are created in your Razorpay account.</p></div></div>
                   <div className="settings-form">
                     <label>TIER NAME<input value={planName} onChange={e => setPlanName(e.target.value)} maxLength={60} placeholder="Founding member" /></label>
                     <label>DESCRIPTION<input value={planDescription} onChange={e => setPlanDescription(e.target.value)} maxLength={240} placeholder="A closer look behind the scenes" /></label>
-                    <div className="plan-billing-fields"><label>PRICE PER BILLING CYCLE (₹)<input type="number" min="1" max="1000000" step="1" value={planPrice} onChange={e => setPlanPrice(e.target.value)} /></label><label>BILLING PERIOD<select value={planPeriod} onChange={e => setPlanPeriod(e.target.value as 'monthly' | 'yearly')}><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label></div>
+                    <div className="plan-billing-fields"><label>PRICE PER BILLING CYCLE (₹)<input type="number" min="1" max="1000000" step="1" value={planPrice} onChange={e => setPlanPrice(e.target.value)} /></label><label>BILLING PERIOD<select value={planPeriod} onChange={e => setPlanPeriod(e.target.value as 'monthly' | 'yearly')}><option value="monthly">Monthly</option><option value="yearly">Yearly</option></select></label><label>RENEW EVERY<select value={planInterval} onChange={e => setPlanInterval(e.target.value)}>{Array.from({length:12},(_,i)=>i+1).map(value => <option key={value} value={String(value)}>{value} {planPeriod === 'monthly' ? (value === 1 ? 'month' : 'months') : (value === 1 ? 'year' : 'years')}</option>)}</select></label></div>
                     <label>MEMBER BENEFITS — one per line<textarea rows={3} value={planFeatures} onChange={e => setPlanFeatures(e.target.value)} maxLength={800} /></label>
                     <button className="button button-primary" onClick={createMembershipPlan} disabled={busy || !planName.trim() || Number(planPrice) < 1}>{busy ? 'Creating Razorpay plan…' : 'Create membership tier'}</button>
                   </div>
