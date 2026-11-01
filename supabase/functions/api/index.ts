@@ -94,6 +94,18 @@ async function getFollowerCount(userId: string) {
   if (error) throw error;
   return count || 0;
 }
+async function isMonetizationUnlocked(userId: string) {
+  const { data: profile, error: profileError } = await db.from("profiles")
+    .select("monetization_unlocked_at").eq("id", userId).maybeSingle();
+  if (profileError) throw profileError;
+  if (profile?.monetization_unlocked_at) return true;
+  if ((await getFollowerCount(userId)) < 20000) return false;
+  const unlockedAt = new Date().toISOString();
+  const { error: updateError } = await db.from("profiles")
+    .update({ monetization_unlocked_at: unlockedAt }).eq("id", userId);
+  if (updateError) throw updateError;
+  return true;
+}
 async function razorpayRequest(credentials: Record<string, string>, endpoint: string, payload?: Record<string, unknown>) {
   const keyId = String(credentials.keyId || "");
   const keySecret = String(credentials.keySecret || "");
@@ -116,7 +128,7 @@ async function razorpayRequest(credentials: Record<string, string>, endpoint: st
 }
 async function getMonetizationConnection(creatorId: string) {
   const followerCount = await getFollowerCount(creatorId);
-  if (followerCount < 20000) throw new Error("Creator monetization unlocks at 20,000 followers. Your current count is " + followerCount.toLocaleString("en-IN") + ".");
+  if (!(await isMonetizationUnlocked(creatorId))) throw new Error("Creator monetization unlocks at 20,000 followers. Your current count is " + followerCount.toLocaleString("en-IN") + ".");
   const { data: connection, error } = await db.from("creator_payment_connections")
     .select("provider,encrypted_credentials,billing_consent_at,billing_consent_version,connected_at")
     .eq("creator_id", creatorId).maybeSingle();
@@ -1278,7 +1290,7 @@ Deno.serve(async (req: Request) => {
       if (visibility === "members_only") {
         const planId = String(body.membershipPlanId || "");
         if (purpose !== "post" || family !== "video" || !/^[0-9a-f-]{36}$/i.test(planId)) return fail("Members-only uploads require a video and a valid membership plan.", 422, origin);
-        if ((await getFollowerCount(current.profile.id)) < 20000) return fail("Creator monetization unlocks at 20,000 followers.", 403, origin);
+        if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Creator monetization unlocks at 20,000 followers.", 403, origin);
         const [{ data: plan }, { data: connection }] = await Promise.all([
           db.from("membership_plans").select("id").eq("id", planId).eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
           db.from("creator_payment_connections").select("provider,billing_consent_at").eq("creator_id", current.profile.id).maybeSingle(),
@@ -1388,8 +1400,7 @@ Deno.serve(async (req: Request) => {
           if (family !== "video" || !/^[0-9a-f-]{36}$/i.test(membershipPlanId)) {
             return fail("Members-only publishing requires a video and an active membership plan.", 422, origin);
           }
-          const followerCount = await getFollowerCount(current.profile.id);
-          if (followerCount < 20000) return fail("Members-only videos unlock at 20,000 followers.", 403, origin);
+          if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Members-only videos unlock at 20,000 followers.", 403, origin);
           const [{ data: plan }, { data: connection }] = await Promise.all([
             db.from("membership_plans").select("id").eq("id", membershipPlanId)
               .eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
@@ -1426,7 +1437,7 @@ Deno.serve(async (req: Request) => {
     if (action === "monetization-status") {
       const current = requireUser();
       const followerCount = await getFollowerCount(current.profile.id);
-      const eligible = followerCount >= 20000;
+      const eligible = await isMonetizationUnlocked(current.profile.id);
       const [{ data: connection, error: connectionError }, { data: plans, error: plansError }] = await Promise.all([
         db.from("creator_payment_connections")
           .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
@@ -1454,7 +1465,7 @@ Deno.serve(async (req: Request) => {
       const provider = String(body.provider || "razorpay");
       if (provider !== "razorpay") return fail("VYRA channel subscriptions currently support Razorpay only.", 422, origin);
       const followerCount = await getFollowerCount(current.profile.id);
-      if (followerCount < 20000) return fail("Creator monetization unlocks at 20,000 followers. Current followers: " + followerCount.toLocaleString("en-IN") + ".", 403, origin);
+      if (!(await isMonetizationUnlocked(current.profile.id))) return fail("Creator monetization unlocks at 20,000 followers. Current followers: " + followerCount.toLocaleString("en-IN") + ".", 403, origin);
       if (body.billingConsent !== true || String(body.billingConsentVersion || "") !== "vyra-razorpay-consent-v1") {
         return fail("Explicitly accept the Razorpay credential-storage and subscription-billing consent before continuing.", 422, origin);
       }
