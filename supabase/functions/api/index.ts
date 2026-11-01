@@ -68,6 +68,68 @@ async function encryptCredentials(value: string) {
   const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(value));
   return "v1." + b64(iv) + "." + b64(new Uint8Array(cipher));
 }
+async function decryptCredentials(value: string) {
+  const rawKey = Deno.env.get("PAYMENT_ENCRYPTION_KEY") || "";
+  let keyBytes: Uint8Array;
+  try { keyBytes = fromB64(rawKey.trim()); } catch { throw new Error("Payment credential encryption is not configured."); }
+  if (keyBytes.length !== 32) throw new Error("Payment credential encryption is not configured.");
+  const parts = value.split(".");
+  if (parts.length !== 3 || parts[0] !== "v1") throw new Error("Stored payment credentials are not readable.");
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: fromB64(parts[1]) }, cryptoKey, fromB64(parts[2]));
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+async function hmacHex(secret: string, value: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), {
+    name: "HMAC", hash: "SHA-256",
+  }, false, ["sign"]);
+  return hex(new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(value))));
+}
+async function razorpayApi(credentials: { keyId: string; keySecret: string }, path: string, method = "GET", payload?: any) {
+  const rpResponse = await fetch("https://api.razorpay.com/v1" + path, {
+    method,
+    headers: {
+      Authorization: "Basic " + btoa(credentials.keyId + ":" + credentials.keySecret),
+      "Content-Type": "application/json",
+    },
+    body: payload === undefined ? undefined : JSON.stringify(payload),
+    signal: AbortSignal.timeout(12000),
+  });
+  const data = await rpResponse.json().catch(() => ({}));
+  if (!rpResponse.ok) {
+    const description = String(data?.error?.description || "");
+    throw new Error(description.slice(0, 240) || "Razorpay rejected the request. Check the connected API credentials and account permissions.");
+  }
+  return data;
+}
+async function creatorFollowerCount(creatorId: string) {
+  const { count, error } = await db.from("follows").select("follower_id", { count: "exact", head: true })
+    .eq("following_id", creatorId);
+  if (error) throw error;
+  return count || 0;
+}
+async function unlockMonetization(profile: any) {
+  if (profile.monetization_unlocked_at) return { unlocked: true, followerCount: await creatorFollowerCount(profile.id) };
+  const followerCount = await creatorFollowerCount(profile.id);
+  if (followerCount >= 20000) {
+    const unlockedAt = new Date().toISOString();
+    const { error } = await db.from("profiles").update({ monetization_unlocked_at: unlockedAt }).eq("id", profile.id);
+    if (error) throw error;
+    profile.monetization_unlocked_at = unlockedAt;
+    return { unlocked: true, followerCount };
+  }
+  return { unlocked: false, followerCount };
+}
+async function paymentConnection(creatorId: string) {
+  const { data, error } = await db.from("creator_payment_connections")
+    .select("provider,encrypted_credentials,billing_consent_at,billing_consent_version,connected_at,updated_at")
+    .eq("creator_id", creatorId).maybeSingle();
+  if (error) throw error;
+  if (!data || data.provider !== "razorpay" || !data.billing_consent_at) return null;
+  const credentials = await decryptCredentials(data.encrypted_credentials);
+  if (!credentials?.keyId || !credentials?.keySecret || !credentials?.webhookSecret) return null;
+  return { connection: data, credentials };
+}
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -121,25 +183,46 @@ async function enrichPosts(rows: any[], viewerId: string) {
   if (!rows?.length) return [];
   const ids = rows.map((row) => row.id);
   const authorIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
-  const [likesResult, followsResult, savedResult] = await Promise.all([
+  const memberPostRows = rows.filter((row) => row.visibility === "members_only" && row.user_id !== viewerId);
+  const [likesResult, followsResult, savedResult, subscriptionsResult] = await Promise.all([
     db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids),
     authorIds.length
       ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds)
       : Promise.resolve({ data: [], error: null }),
     db.from("saved_posts").select("post_id").eq("user_id", viewerId).in("post_id", ids),
+    memberPostRows.length
+      ? db.from("subscriptions").select("creator_id,membership_plan_id")
+          .eq("subscriber_id", viewerId).eq("status", "active")
+          .in("creator_id", [...new Set(memberPostRows.map((row) => row.user_id))])
+      : Promise.resolve({ data: [], error: null }),
   ]);
   if (likesResult.error) throw likesResult.error;
   if (followsResult.error) throw followsResult.error;
   if (savedResult.error) throw savedResult.error;
+  if (subscriptionsResult.error) throw subscriptionsResult.error;
   const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
   const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
   const saved = new Set((savedResult.data || []).map((item: any) => item.post_id));
-  return rows.map((row) => ({
-    id: row.id, title: row.title || "", caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
-    kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
-    comments_count: row.comments_count || 0, views_count: row.views_count || 0,
-    created_at: row.created_at, is_world_featured: !!row.is_world_featured,
-    liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+  const activeMemberships = new Set((subscriptionsResult.data || [])
+    .map((item: any) => item.creator_id + ":" + item.membership_plan_id));
+  const visibleRows = rows.filter((row) => row.visibility !== "members_only"
+    || row.user_id === viewerId
+    || (!!row.membership_plan_id && activeMemberships.has(row.user_id + ":" + row.membership_plan_id)));
+  return await Promise.all(visibleRows.map(async (row) => {
+    const bucket = row.media_bucket === "member-media" ? "member-media" : "media";
+    let mediaUrl = publicMedia(row.media_path);
+    if (bucket === "member-media") {
+      const { data, error } = await db.storage.from(bucket).createSignedUrl(row.media_path, 60 * 60);
+      mediaUrl = error ? "" : data?.signedUrl || "";
+    }
+    return {
+      id: row.id, title: row.title || "", caption: row.caption, media_url: mediaUrl, media_type: row.media_type,
+      kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
+      comments_count: row.comments_count || 0, views_count: row.views_count || 0,
+      visibility: row.visibility || "public", membership_plan_id: row.membership_plan_id || null,
+      created_at: row.created_at, is_world_featured: !!row.is_world_featured,
+      liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+    };
   }));
 }
 async function authRateLimit(req: Request) {
@@ -165,11 +248,11 @@ async function exactCopyrightMatch(hash: string) {
   const { data } = await db.from("copyright_fingerprints").select("id,rights_holder,source_label").eq("sha256", hash).maybeSingle();
   return data || null;
 }
-async function storageFileExists(path: string) {
+async function storageFileExists(path: string, bucket = "media") {
   const parts = path.split("/");
   const folder = parts.slice(0, -1).join("/");
   const leaf = parts[parts.length - 1];
-  const { data, error } = await db.storage.from("media").list(folder, { search: leaf, limit: 10 });
+  const { data, error } = await db.storage.from(bucket).list(folder, { search: leaf, limit: 10 });
   if (error) return false;
   return (data || []).some((item: any) => item.name === leaf);
 }
@@ -377,14 +460,14 @@ Deno.serve(async (req: Request) => {
       const postId = String(body.postId || "");
       if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid post to delete.", 422, origin);
       const { data: post, error: lookupError } = await db.from("posts")
-        .select("id,media_path,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
+        .select("id,media_path,media_bucket,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
       if (lookupError) throw lookupError;
       if (!post) return fail("This post was not found on your creator account.", 404, origin);
       const { data: deleted, error: deleteError } = await db.from("posts").delete()
         .eq("id", postId).eq("user_id", current.profile.id).select("id").maybeSingle();
       if (deleteError) throw deleteError;
       if (!deleted) return fail("The post could not be deleted. Refresh and try again.", 409, origin);
-      const { error: storageError } = await db.storage.from("media").remove([post.media_path]);
+      const { error: storageError } = await db.storage.from(post.media_bucket === "member-media" ? "member-media" : "media").remove([post.media_path]);
       return response({ ok: true, storageCleanupPending: !!storageError }, 200, origin);
     }
     if (action === "search-users" || action === "suggestions") {
@@ -480,6 +563,179 @@ Deno.serve(async (req: Request) => {
       return response({ notifications: data || [] }, 200, origin);
     }
 
+    if (action === "dm-group-list") {
+      const current = requireUser();
+      const { data: memberships, error: memberError } = await db.from("dm_group_members")
+        .select("group_id,role,last_read_at").eq("user_id", current.profile.id);
+      if (memberError) throw memberError;
+      const groupIds = (memberships || []).map((m: any) => m.group_id);
+      if (!groupIds.length) return response({ groups: [] }, 200, origin);
+      const { data: groups, error: groupError } = await db.from("dm_groups").select("*")
+        .in("id", groupIds).order("last_message_at", { ascending: false }).limit(100);
+      if (groupError) throw groupError;
+      const [allMembers, latestMessages] = await Promise.all([
+        db.from("dm_group_members").select("group_id,user_id,role,last_read_at").in("group_id", groupIds),
+        db.from("dm_group_messages").select("id,group_id,sender_id,content,message_type,created_at")
+          .in("group_id", groupIds).order("created_at", { ascending: false }).limit(500),
+      ]);
+      if (allMembers.error) throw allMembers.error;
+      if (latestMessages.error) throw latestMessages.error;
+      const membershipByGroup = new Map((memberships || []).map((m: any) => [m.group_id, m]));
+      const latestByGroup = new Map<string, any>();
+      for (const message of latestMessages.data || []) {
+        if (!latestByGroup.has(message.group_id)) latestByGroup.set(message.group_id, message);
+      }
+      const memberCounts = new Map<string, number>();
+      for (const member of allMembers.data || []) memberCounts.set(member.group_id, (memberCounts.get(member.group_id) || 0) + 1);
+      const groupsOut = (groups || []).map((group: any) => {
+        const latest = latestByGroup.get(group.id) || null;
+        const member = membershipByGroup.get(group.id);
+        return {
+          id: group.id, name: group.name, description: group.description || "",
+          created_by: group.created_by, last_message_at: group.last_message_at,
+          created_at: group.created_at, member_count: memberCounts.get(group.id) || 1,
+          role: member?.role || "member", last_read_at: member?.last_read_at || null,
+          last_message: latest ? { content: latest.content, sender_id: latest.sender_id, created_at: latest.created_at, message_type: latest.message_type } : null,
+        };
+      });
+      return response({ groups: groupsOut }, 200, origin);
+    }
+    if (action === "dm-group-create") {
+      const current = requireUser();
+      const name = String(body.name || "").trim().slice(0, 60);
+      const description = String(body.description || "").trim().slice(0, 180);
+      const requested = Array.isArray(body.memberUsernames) ? body.memberUsernames : [];
+      const usernames = [...new Set(requested.map((value: any) => String(value).replace(/^@/, "").toLowerCase().trim()).filter((value: string) => validateUsername(value)))];
+      if (name.length < 2) return fail("Group names must contain at least two characters.", 422, origin);
+      if (usernames.length > 49) return fail("A VYRA group can contain up to 50 people.", 422, origin);
+      const { data: people, error: peopleError } = usernames.length
+        ? await db.from("profiles").select("id,username").in("username", usernames).neq("id", current.profile.id)
+        : { data: [], error: null };
+      if (peopleError) throw peopleError;
+      if ((people || []).length !== usernames.length) return fail("One or more usernames could not be found. Check the handles and try again.", 404, origin);
+      const { data: group, error } = await db.from("dm_groups").insert({
+        name, description, created_by: current.profile.id,
+      }).select("id,name,description,created_by,created_at,last_message_at").single();
+      if (error) throw error;
+      const memberRows = [
+        { group_id: group.id, user_id: current.profile.id, role: "admin" },
+        ...(people || []).map((person: any) => ({ group_id: group.id, user_id: person.id, role: "member" })),
+      ];
+      const { error: insertError } = await db.from("dm_group_members").insert(memberRows);
+      if (insertError) {
+        await db.from("dm_groups").delete().eq("id", group.id);
+        throw insertError;
+      }
+      if (people?.length) {
+        await db.from("notifications").insert(people.map((person: any) => ({
+          user_id: person.id, actor_id: current.profile.id, type: "group_invite",
+          message: "@" + current.profile.username + " added you to the group " + name + ".",
+        })));
+      }
+      return response({ group }, 201, origin);
+    }
+    if (action === "dm-group-add") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const requested = Array.isArray(body.memberUsernames) ? body.memberUsernames : [];
+      const usernames = [...new Set(requested.map((value: any) => String(value).replace(/^@/, "").toLowerCase().trim()).filter((value: string) => validateUsername(value)))];
+      if (!groupId || !usernames.length || usernames.length > 49) return fail("Choose at least one valid username to add.", 422, origin);
+      const { data: permission } = await db.from("dm_group_members").select("role")
+        .eq("group_id", groupId).eq("user_id", current.profile.id).maybeSingle();
+      if (permission?.role !== "admin") return fail("Only group admins can add members.", 403, origin);
+      const { count } = await db.from("dm_group_members").select("user_id", { count: "exact", head: true }).eq("group_id", groupId);
+      if ((count || 0) + usernames.length > 50) return fail("Groups can contain up to 50 people.", 422, origin);
+      const { data: people, error } = await db.from("profiles").select("id,username").in("username", usernames).neq("id", current.profile.id);
+      if (error) throw error;
+      if ((people || []).length !== usernames.length) return fail("One or more usernames could not be found.", 404, origin);
+      const { data: existing } = await db.from("dm_group_members").select("user_id").eq("group_id", groupId)
+        .in("user_id", (people || []).map((p: any) => p.id));
+      const present = new Set((existing || []).map((m: any) => m.user_id));
+      const newPeople = (people || []).filter((p: any) => !present.has(p.id));
+      if (newPeople.length) {
+        const { error: addError } = await db.from("dm_group_members").insert(newPeople.map((p: any) => ({ group_id: groupId, user_id: p.id, role: "member" })));
+        if (addError) throw addError;
+        const { data: group } = await db.from("dm_groups").select("name").eq("id", groupId).maybeSingle();
+        await db.from("notifications").insert(newPeople.map((person: any) => ({
+          user_id: person.id, actor_id: current.profile.id, type: "group_invite",
+          message: "@" + current.profile.username + " added you to the group " + (group?.name || "a VYRA group") + ".",
+        })));
+      }
+      return response({ added: newPeople.length }, 200, origin);
+    }
+    if (action === "dm-group-messages") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const { data: membership } = await db.from("dm_group_members").select("group_id")
+        .eq("group_id", groupId).eq("user_id", current.profile.id).maybeSingle();
+      if (!membership) return fail("Group chat not found.", 404, origin);
+      const { data: messages, error } = await db.from("dm_group_messages")
+        .select("id,group_id,sender_id,content,message_type,created_at")
+        .eq("group_id", groupId).order("created_at", { ascending: true }).limit(200);
+      if (error) throw error;
+      await db.from("dm_group_members").update({ last_read_at: new Date().toISOString() })
+        .eq("group_id", groupId).eq("user_id", current.profile.id);
+      const senderIds = [...new Set((messages || []).map((m: any) => m.sender_id))];
+      const { data: people } = senderIds.length
+        ? await db.from("profiles").select("*").in("id", senderIds)
+        : { data: [] };
+      const peopleById = new Map((people || []).map((p: any) => [p.id, safeUser(p)]));
+      return response({ messages: (messages || []).map((m: any) => ({
+        ...m, author: peopleById.get(m.sender_id) || null,
+      })) }, 200, origin);
+    }
+    if (action === "dm-group-send") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const content = String(body.content || "").trim();
+      if (!content || content.length > 2000) return fail("Group messages must contain 1–2,000 characters.", 422, origin);
+      const { data: membership } = await db.from("dm_group_members").select("group_id")
+        .eq("group_id", groupId).eq("user_id", current.profile.id).maybeSingle();
+      if (!membership) return fail("You are not a member of this group.", 403, origin);
+      const { data: message, error } = await db.from("dm_group_messages").insert({
+        group_id: groupId, sender_id: current.profile.id, content, message_type: "text",
+      }).select("id,group_id,sender_id,content,message_type,created_at").single();
+      if (error) throw error;
+      const { data: members } = await db.from("dm_group_members").select("user_id").eq("group_id", groupId).neq("user_id", current.profile.id);
+      if (members?.length) {
+        await db.from("notifications").insert(members.map((m: any) => ({
+          user_id: m.user_id, actor_id: current.profile.id, type: "group_message",
+          message: "@" + current.profile.username + " sent a message in your group.",
+        })));
+      }
+      return response({ message }, 201, origin);
+    }
+    if (action === "dm-group-leave") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const { data: membership } = await db.from("dm_group_members").select("role")
+        .eq("group_id", groupId).eq("user_id", current.profile.id).maybeSingle();
+      if (!membership) return fail("Group chat not found.", 404, origin);
+      if (membership.role === "admin") {
+        const { count } = await db.from("dm_group_members").select("user_id", { count: "exact", head: true })
+          .eq("group_id", groupId).eq("role", "admin");
+        if ((count || 0) <= 1) {
+          const { error } = await db.from("dm_groups").delete().eq("id", groupId);
+          if (error) throw error;
+          return response({ deleted: true }, 200, origin);
+        }
+      }
+      const { error } = await db.from("dm_group_members").delete().eq("group_id", groupId).eq("user_id", current.profile.id);
+      if (error) throw error;
+      return response({ deleted: false }, 200, origin);
+    }
+    if (action === "dm-group-rename") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const name = String(body.name || "").trim().slice(0, 60);
+      if (name.length < 2) return fail("Enter a group name with at least two characters.", 422, origin);
+      const { data: membership } = await db.from("dm_group_members").select("role")
+        .eq("group_id", groupId).eq("user_id", current.profile.id).maybeSingle();
+      if (membership?.role !== "admin") return fail("Only group admins can rename this chat.", 403, origin);
+      const { data, error } = await db.from("dm_groups").update({ name }).eq("id", groupId).select("id,name").single();
+      if (error) throw error;
+      return response({ group: data }, 200, origin);
+    }
     if (action === "dm-inbox") {
       const current = requireUser();
       const userId = current.profile.id;
@@ -667,21 +923,46 @@ Deno.serve(async (req: Request) => {
         return fail("Conversation not found.", 404, origin);
       }
       const { data: messages, error } = await db.from("dm_messages")
-        .select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,shared_post_id,e2ee_version,created_at,shared_post:posts!dm_messages_shared_post_id_fkey(id,caption,media_path,media_type,kind,created_at,author:profiles!posts_user_id_fkey(*))")
+        .select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,shared_post_id,e2ee_version,created_at,shared_post:posts!dm_messages_shared_post_id_fkey(id,user_id,caption,media_path,media_bucket,visibility,membership_plan_id,media_type,kind,created_at,author:profiles!posts_user_id_fkey(*))")
         .eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(200);
       if (error) throw error;
+      const memberShares = (messages || []).map((message: any) => message.shared_post)
+        .filter((post: any) => post?.visibility === "members_only" && post.user_id !== current.profile.id);
+      const shareCreatorIds = [...new Set(memberShares.map((post: any) => post.user_id))];
+      const { data: memberships, error: membershipError } = shareCreatorIds.length
+        ? await db.from("subscriptions").select("creator_id,membership_plan_id")
+            .eq("subscriber_id", current.profile.id).eq("status", "active").in("creator_id", shareCreatorIds)
+        : { data: [], error: null };
+      if (membershipError) throw membershipError;
+      const shareAccess = new Set((memberships || []).map((item: any) => item.creator_id + ":" + item.membership_plan_id));
       return response({
-        messages: (messages || []).map((message: any) => ({
-          id: message.id, conversation_id: message.conversation_id, sender_id: message.sender_id,
-          content: message.content, message_type: message.message_type || "text",
-          media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
-          attachment_iv: message.attachment_iv, attachment_mime: message.attachment_mime,
-          e2ee_version: message.e2ee_version || 0, created_at: message.created_at,
-          shared_post: message.shared_post ? {
-            id: message.shared_post.id, caption: message.shared_post.caption,
-            media_url: publicMedia(message.shared_post.media_path), media_type: message.shared_post.media_type,
-            kind: message.shared_post.kind, author: safeUser(message.shared_post.author),
-          } : null,
+        messages: await Promise.all((messages || []).map(async (message: any) => {
+          const shared = message.shared_post;
+          const sharedAllowed = !shared || shared.visibility !== "members_only"
+            || shared.user_id === current.profile.id
+            || (!!shared.membership_plan_id && shareAccess.has(shared.user_id + ":" + shared.membership_plan_id));
+          let sharedMediaUrl: string | null = null;
+          if (shared && sharedAllowed) {
+            if (shared.media_bucket === "member-media") {
+              const { data: signed, error: signedError } = await db.storage.from("member-media")
+                .createSignedUrl(shared.media_path, 60 * 60);
+              sharedMediaUrl = signedError ? null : signed?.signedUrl || null;
+            } else {
+              sharedMediaUrl = publicMedia(shared.media_path);
+            }
+          }
+          return {
+            id: message.id, conversation_id: message.conversation_id, sender_id: message.sender_id,
+            content: message.content, message_type: message.message_type || "text",
+            media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
+            attachment_iv: message.attachment_iv, attachment_mime: message.attachment_mime,
+            e2ee_version: message.e2ee_version || 0, created_at: message.created_at,
+            shared_post: shared && sharedAllowed && sharedMediaUrl ? {
+              id: shared.id, caption: shared.caption,
+              media_url: sharedMediaUrl, media_type: shared.media_type,
+              kind: shared.kind, author: safeUser(shared.author),
+            } : null,
+          };
         }))
       }, 200, origin);
     }
@@ -795,8 +1076,15 @@ Deno.serve(async (req: Request) => {
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
       if (!conversation || conversation.status !== "accepted"
         || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) return fail("Accepted conversation not found.", 403, origin);
-      const { data: post } = await db.from("posts").select("id").eq("id", postId).eq("status","approved").maybeSingle();
+      const { data: post } = await db.from("posts")
+        .select("id,user_id,visibility,membership_plan_id").eq("id", postId).eq("status","approved").maybeSingle();
       if (!post) return fail("This post is no longer available to share.", 404, origin);
+      if (post.visibility === "members_only" && post.user_id !== current.profile.id) {
+        const { data: membership } = await db.from("subscriptions").select("id")
+          .eq("creator_id", post.user_id).eq("subscriber_id", current.profile.id)
+          .eq("membership_plan_id", post.membership_plan_id).eq("status", "active").maybeSingle();
+        if (!membership) return fail("Only active channel members can share this video.", 403, origin);
+      }
       const { data: message, error } = await db.from("dm_messages").insert({
         conversation_id: conversationId, sender_id: current.profile.id, content,
         message_type: "shared_post", shared_post_id: postId, e2ee_version: legacyEncrypted ? 1 : 0,
@@ -943,6 +1231,7 @@ Deno.serve(async (req: Request) => {
       const current = requireUser();
       const purpose = String(body.purpose || "");
       const mime = String(body.mimeType || "");
+      const visibility = String(body.visibility || "public");
       const name = String(body.fileName || "upload").slice(0, 120).replace(/[^a-zA-Z0-9._-]/g, "_");
       const size = Number(body.size || 0);
       const hash = String(body.sha256 || "").toLowerCase();
@@ -953,13 +1242,25 @@ Deno.serve(async (req: Request) => {
       if ((purpose === "story" || purpose === "post") && family === "audio") return fail("Audio files belong in your audio library.", 422, origin);
       if (purpose === "avatar" && family !== "image") return fail("Profile photos must be images.", 422, origin);
       if (purpose === "audio" && family !== "audio") return fail("Choose an MP3 or M4A audio file.", 422, origin);
+      if (!["public","members_only"].includes(visibility)) return fail("Choose a valid video audience.", 422, origin);
+      let uploadBucket = "media";
+      if (visibility === "members_only") {
+        if (purpose !== "post" || family !== "video") return fail("Only videos can be published for channel members.", 422, origin);
+        const unlock = await unlockMonetization(current.profile);
+        if (!unlock.unlocked) return fail("Channel monetization unlocks at 20,000 followers.", 403, origin);
+        const planId = String(body.membershipPlanId || "");
+        const { data: plan } = await db.from("membership_plans").select("id")
+          .eq("id", planId).eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle();
+        if (!plan || !(await paymentConnection(current.profile.id))) return fail("Create an active Razorpay membership plan first.", 403, origin);
+        uploadBucket = "member-media";
+      }
       const match = await exactCopyrightMatch(hash);
       if (match) return response({ blocked: true, reason: "exact_copyright_hash_match" }, 200, origin);
       const extension = name.includes(".") ? name.split(".").pop() : "bin";
       const path = current.profile.id + "/" + crypto.randomUUID() + "." + extension;
-      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      const { data, error } = await db.storage.from(uploadBucket).createSignedUploadUrl(path, { upsert: false });
       if (error || !data?.token) throw error || new Error("Could not create a signed upload.");
-      return response({ path, uploadToken: data.token }, 200, origin);
+      return response({ path, uploadToken: data.token, bucket: uploadBucket }, 200, origin);
     }
     if (action === "complete-upload") {
       const current = requireUser();
@@ -969,6 +1270,9 @@ Deno.serve(async (req: Request) => {
       const mime = String(body.mimeType || "");
       const family = mimeFamily(mime);
       const adminCurated = body.adminCurated === true;
+      const visibility = String(body.visibility || "public");
+      const storageBucket = visibility === "members_only" ? "member-media" : "media";
+      let membershipPlanId: string | null = null;
       let curatedSourceUrl = "";
       let curatedRightsHolder = "";
       if (adminCurated) {
@@ -990,9 +1294,20 @@ Deno.serve(async (req: Request) => {
         && !String(body.rightsConfirmation || "").startsWith("I own or have permission to publish")) {
         return fail("Confirm that you own this video or have permission to publish it.", 422, origin);
       }
+      if (!["public","members_only"].includes(visibility)) return fail("Choose a valid video audience.", 422, origin);
+      if (visibility === "members_only") {
+        if (purpose !== "post" || family !== "video") return fail("Only videos can be published for channel members.", 422, origin);
+        const unlock = await unlockMonetization(current.profile);
+        if (!unlock.unlocked) return fail("Channel monetization unlocks at 20,000 followers.", 403, origin);
+        const planId = String(body.membershipPlanId || "");
+        const { data: plan } = await db.from("membership_plans").select("id")
+          .eq("id", planId).eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle();
+        if (!plan || !(await paymentConnection(current.profile.id))) return fail("Choose one of your active membership plans.", 403, origin);
+        membershipPlanId = plan.id;
+      }
       if (!path.startsWith(current.profile.id + "/") || !/^[a-f0-9]{64}$/.test(hash)) return fail("Invalid upload reference.", 422, origin);
-      if (!(await storageFileExists(path))) return fail("Upload was not found in media storage.", 422, origin);
-      const { data: uploadedBlob, error: downloadError } = await db.storage.from("media").download(path);
+      if (!(await storageFileExists(path, storageBucket))) return fail("Upload was not found in media storage.", 422, origin);
+      const { data: uploadedBlob, error: downloadError } = await db.storage.from(storageBucket).download(path);
       if (downloadError || !uploadedBlob) return fail("Uploaded media could not be verified.", 422, origin);
       if (uploadedBlob.size !== Number(body.size || 0) || (uploadedBlob.type && uploadedBlob.type !== mime)) {
         await db.storage.from("media").remove([path]);
@@ -1051,6 +1366,7 @@ Deno.serve(async (req: Request) => {
           title: String(body.title || "").trim().slice(0, 160),
           caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
+          visibility, membership_plan_id: membershipPlanId, media_bucket: storageBucket,
           sha256: hash,
           status: family === "video" ? "approved" : "pending",
           copyright_status: family === "video" ? "not_scanned" : "pending_manual_review",
@@ -1069,37 +1385,206 @@ Deno.serve(async (req: Request) => {
     }
     if (action === "connect-payment") {
       const current = requireUser();
-      if (!current.profile.is_verified) return fail("Only verified creators can connect a payment provider.", 403, origin);
-      const provider = String(body.provider || "");
-      if (!["razorpay", "stripe"].includes(provider)) return fail("Choose Razorpay or Stripe.", 422, origin);
-      let credentials: Record<string, string>;
-      if (provider === "stripe") {
-        const secretKey = String(body.secretKey || "").trim();
-        if (!/^sk_(test|live)_[A-Za-z0-9_]{12,}$/.test(secretKey)) return fail("Enter a valid Stripe secret key (test or live).", 422, origin);
-        credentials = { secretKey };
-      } else {
-        const keyId = String(body.keyId || "").trim();
-        const keySecret = String(body.keySecret || "").trim();
-        if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
-          return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
-        }
-        credentials = { keyId, keySecret };
+      const unlock = await unlockMonetization(current.profile);
+      if (!unlock.unlocked) return fail("VYRA monetization unlocks when your channel reaches 20,000 followers.", 403, origin);
+      if (body.consentAccepted !== true) return fail("Confirm the Razorpay storage and billing consent before connecting.", 422, origin);
+      const provider = String(body.provider || "razorpay");
+      if (provider !== "razorpay") return fail("Creator memberships currently use Razorpay.", 422, origin);
+      const keyId = String(body.keyId || "").trim();
+      const keySecret = String(body.keySecret || "").trim();
+      const webhookSecret = String(body.webhookSecret || "").trim();
+      if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId)
+        || keySecret.length < 16 || keySecret.length > 256
+        || webhookSecret.length < 16 || webhookSecret.length > 256) {
+        return fail("Enter your Razorpay Key ID, Key Secret and a webhook secret (each secret must be at least 16 characters).", 422, origin);
       }
+      const credentials = { keyId, keySecret, webhookSecret };
+      // Validate the key pair with Razorpay before encrypting or storing it.
+      await razorpayApi({ keyId, keySecret }, "/plans?count=1");
       const encrypted = await encryptCredentials(JSON.stringify(credentials));
+      const now = new Date().toISOString();
       const { error } = await db.from("creator_payment_connections").upsert({
         creator_id: current.profile.id, provider, encrypted_credentials: encrypted,
-        connected_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        connected_at: now, updated_at: now,
+        billing_consent_at: now, billing_consent_version: "vyra-creator-billing-2026-11",
       }, { onConflict: "creator_id" });
       if (error) throw error;
-      await audit(current.profile.id, "connect_creator_payment_provider", current.profile.id, { provider });
-      return response({ ok: true, provider }, 200, origin);
+      await audit(current.profile.id, "connect_creator_razorpay_memberships", current.profile.id, {
+        provider, consentVersion: "vyra-creator-billing-2026-11", followerCount: unlock.followerCount,
+      });
+      return response({
+        ok: true, provider, connectedAt: now,
+        webhookUrl: SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator=" + current.profile.id,
+      }, 200, origin);
     }
     if (action === "payment-status") {
       const current = requireUser();
       const { data, error } = await db.from("creator_payment_connections")
-        .select("provider,connected_at,updated_at").eq("creator_id", current.profile.id).maybeSingle();
+        .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
+        .eq("creator_id", current.profile.id).maybeSingle();
       if (error) throw error;
       return response({ connection: data || null }, 200, origin);
+    }
+    if (action === "membership-status") {
+      const current = requireUser();
+      const unlock = await unlockMonetization(current.profile);
+      const { data: plans, error: plansError } = await db.from("membership_plans")
+        .select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
+        .eq("creator_id", current.profile.id).order("created_at", { ascending: false });
+      if (plansError) throw plansError;
+      const activePlanIds = (plans || []).filter((p: any) => p.is_active).map((p: any) => p.id);
+      const { count: activeSubscribers, error: subError } = activePlanIds.length
+        ? await db.from("subscriptions").select("id", { count: "exact", head: true })
+            .eq("creator_id", current.profile.id).eq("status", "active").in("membership_plan_id", activePlanIds)
+        : { count: 0, error: null };
+      if (subError) throw subError;
+      const connection = await paymentConnection(current.profile.id);
+      return response({
+        followerCount: unlock.followerCount, unlocked: unlock.unlocked,
+        connection: connection ? {
+          provider: "razorpay", connectedAt: connection.connection.connected_at,
+          consentAcceptedAt: connection.connection.billing_consent_at,
+          keyMode: connection.credentials.keyId.startsWith("rzp_live_") ? "live" : "test",
+        } : null,
+        webhookUrl: SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator=" + current.profile.id,
+        plans: plans || [], activeSubscribers: activeSubscribers || 0,
+      }, 200, origin);
+    }
+    if (action === "creator-membership-plans") {
+      const current = requireUser();
+      const creatorId = String(body.creatorId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(creatorId) || creatorId === current.profile.id) return response({ plans: [] }, 200, origin);
+      const { data: plans, error } = await db.from("membership_plans")
+        .select("id,creator_id,name,description,features,amount_paise,currency,period,interval")
+        .eq("creator_id", creatorId).eq("is_active", true).order("created_at", { ascending: true });
+      if (error) throw error;
+      const { data: subscriptions, error: subError } = plans?.length
+        ? await db.from("subscriptions").select("membership_plan_id,status,current_end_at")
+            .eq("subscriber_id", current.profile.id).eq("creator_id", creatorId)
+            .eq("status", "active").in("membership_plan_id", plans.map((p: any) => p.id))
+        : { data: [], error: null };
+      if (subError) throw subError;
+      const subscribed = new Map((subscriptions || []).map((row: any) => [row.membership_plan_id, row]));
+      return response({
+        plans: (plans || []).map((plan: any) => ({
+          ...plan, subscribed: subscribed.has(plan.id),
+          currentEndAt: subscribed.get(plan.id)?.current_end_at || null,
+        })),
+      }, 200, origin);
+    }
+    if (action === "membership-plan-create") {
+      const current = requireUser();
+      const unlock = await unlockMonetization(current.profile);
+      if (!unlock.unlocked) return fail("Creator monetization unlocks at 20,000 followers.", 403, origin);
+      const connection = await paymentConnection(current.profile.id);
+      if (!connection) return fail("Connect and consent to Razorpay billing first.", 403, origin);
+      const name = String(body.name || "").trim().slice(0, 60);
+      const description = String(body.description || "").trim().slice(0, 240);
+      const amountPaise = Math.round(Number(body.amountRupees) * 100);
+      const period = String(body.period || "monthly");
+      const interval = Number(body.interval || 1);
+      const features = Array.isArray(body.features)
+        ? body.features.map((item: any) => String(item).trim().slice(0, 80)).filter(Boolean).slice(0, 8)
+        : [];
+      if (name.length < 2 || !Number.isInteger(amountPaise) || amountPaise <= 100 || amountPaise > 100000000
+        || !["monthly","yearly"].includes(period) || !Number.isInteger(interval) || interval < 1 || interval > 12) {
+        return fail("Enter a plan name, a price of at least ₹1.01, and a valid monthly or yearly billing cycle.", 422, origin);
+      }
+      if (!features.length) return fail("Add at least one member benefit so subscribers know what they receive.", 422, origin);
+      const razorpayPlan = await razorpayApi(connection.credentials, "/plans", "POST", {
+        period, interval,
+        item: { name, description: description || name, amount: amountPaise, currency: "INR" },
+        notes: { vyra_creator_id: current.profile.id },
+      });
+      const { data: plan, error } = await db.from("membership_plans").insert({
+        creator_id: current.profile.id, name, description, features,
+        amount_paise: amountPaise, currency: "INR", period, interval,
+        razorpay_plan_id: razorpayPlan.id, is_active: true,
+      }).select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at").single();
+      if (error) throw error;
+      await audit(current.profile.id, "create_razorpay_membership_plan", plan.id, { amountPaise, period, interval });
+      return response({ plan }, 201, origin);
+    }
+    if (action === "membership-plan-toggle") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      const isActive = body.isActive === true;
+      const { data, error } = await db.from("membership_plans").update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq("id", planId).eq("creator_id", current.profile.id)
+        .select("id,name,is_active").maybeSingle();
+      if (error) throw error;
+      if (!data) return fail("Membership plan not found.", 404, origin);
+      return response({ plan: data }, 200, origin);
+    }
+    if (action === "membership-start") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      const { data: plan, error } = await db.from("membership_plans")
+        .select("id,creator_id,name,description,amount_paise,currency,period,interval,razorpay_plan_id,is_active")
+        .eq("id", planId).eq("is_active", true).maybeSingle();
+      if (error) throw error;
+      if (!plan || plan.creator_id === current.profile.id) return fail("Membership plan is not available.", 404, origin);
+      const connection = await paymentConnection(plan.creator_id);
+      if (!connection) return fail("This creator has not connected Razorpay memberships yet.", 409, origin);
+      const { data: existing, error: existingError } = await db.from("subscriptions")
+        .select("provider_subscription_id,status").eq("creator_id", plan.creator_id)
+        .eq("subscriber_id", current.profile.id).eq("membership_plan_id", plan.id)
+        .in("status", ["active","pending"]).maybeSingle();
+      if (existingError) throw existingError;
+      if (existing?.status === "active") return fail("You are already a member of this channel.", 409, origin);
+      if (existing?.provider_subscription_id) {
+        return response({
+          subscriptionId: existing.provider_subscription_id,
+          keyId: connection.credentials.keyId,
+          plan: { name: plan.name, amountPaise: plan.amount_paise, currency: plan.currency },
+        }, 200, origin);
+      }
+      const totalCount = plan.period === "yearly" ? 10 : 120;
+      const rpSubscription = await razorpayApi(connection.credentials, "/subscriptions", "POST", {
+        plan_id: plan.razorpay_plan_id, total_count: totalCount, quantity: 1, customer_notify: true,
+        notes: {
+          vyra_creator_id: plan.creator_id, vyra_subscriber_id: current.profile.id,
+          vyra_membership_plan_id: plan.id,
+        },
+      });
+      const { error: insertError } = await db.from("subscriptions").insert({
+        creator_id: plan.creator_id, subscriber_id: current.profile.id, provider: "razorpay",
+        provider_subscription_id: rpSubscription.id, membership_plan_id: plan.id, status: "pending",
+        created_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+      });
+      if (insertError) throw insertError;
+      return response({
+        subscriptionId: rpSubscription.id, keyId: connection.credentials.keyId,
+        plan: { name: plan.name, amountPaise: plan.amount_paise, currency: plan.currency },
+      }, 201, origin);
+    }
+    if (action === "membership-verify") {
+      const current = requireUser();
+      const subscriptionId = String(body.subscriptionId || "");
+      const paymentId = String(body.razorpayPaymentId || "");
+      const signature = String(body.razorpaySignature || "");
+      if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId) || !/^pay_[A-Za-z0-9]+$/.test(paymentId) || !/^[a-f0-9]{64}$/i.test(signature)) {
+        return fail("Razorpay returned an invalid subscription verification response.", 422, origin);
+      }
+      const { data: subscription, error } = await db.from("subscriptions")
+        .select("id,creator_id,subscriber_id,status,membership_plan_id")
+        .eq("provider_subscription_id", subscriptionId).eq("subscriber_id", current.profile.id)
+        .eq("provider", "razorpay").maybeSingle();
+      if (error) throw error;
+      if (!subscription) return fail("Membership checkout was not found for this account.", 404, origin);
+      const connection = await paymentConnection(subscription.creator_id);
+      if (!connection) return fail("The creator's Razorpay connection is no longer available.", 409, origin);
+      const expected = await hmacHex(connection.credentials.keySecret, paymentId + "|" + subscriptionId);
+      if (!constantTimeEqual(expected.toLowerCase(), signature.toLowerCase())) return fail("Razorpay payment signature could not be verified.", 403, origin);
+      const { error: updateError } = await db.from("subscriptions").update({
+        status: "active", razorpay_payment_id: paymentId, updated_at: new Date().toISOString(),
+      }).eq("id", subscription.id);
+      if (updateError) throw updateError;
+      await db.from("notifications").insert({
+        user_id: subscription.creator_id, actor_id: current.profile.id, type: "membership",
+        message: "@" + current.profile.username + " joined your channel as a member.",
+      });
+      return response({ ok: true, status: "active" }, 200, origin);
     }
     if (action === "list-audio") {
       const current = requireUser();

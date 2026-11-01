@@ -8,7 +8,7 @@ import {
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus, Trash2,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
   Share2, Copy, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
-  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
+  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2, Users, UserPlus, Lock, CheckCircle2, Pencil,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, generateVideoCopy, isReelVideo, maxBytesFor, videoDuration } from './lib/media';
@@ -285,7 +285,7 @@ type BulkVideoItem = {
   error?: string;
 };
 
-function UploadModal({ token, onClose, onDone }: { token: string; onClose: () => void; onDone: () => void }) {
+function UploadModal({ token, user, onClose, onDone }: { token: string; user: User; onClose: () => void; onDone: () => void }) {
   const [kind, setKind] = useState<'post' | 'story'>('post');
   const [bulkMode, setBulkMode] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -295,10 +295,22 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
   const [rights, setRights] = useState(false);
   const [tracks, setTracks] = useState<any[]>([]);
   const [audioTrackId, setAudioTrackId] = useState('');
+  const [memberOnly, setMemberOnly] = useState(false);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipUnlocked, setMembershipUnlocked] = useState(false);
+  const [membershipPlanId, setMembershipPlanId] = useState('');
   const [bulkVideos, setBulkVideos] = useState<BulkVideoItem[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
+  useEffect(() => {
+    callApi<{ unlocked: boolean; plans: any[] }>('membership-status', {}, token).then(result => {
+      setMembershipUnlocked(result.unlocked);
+      const activePlans = (result.plans || []).filter(plan => plan.is_active);
+      setMembershipPlans(activePlans);
+      setMembershipPlanId(current => current || activePlans[0]?.id || '');
+    }).catch(() => undefined);
+  }, [token]);
 
   function patchBulkVideo(id: string, patch: Partial<BulkVideoItem>) {
     setBulkVideos(current => current.map(item => item.id === id ? { ...item, ...patch } : item));
@@ -387,12 +399,17 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
       const generatedCopy = kind === 'post' && file.type.startsWith('video/')
         ? generateVideoCopy(file, duration)
         : null;
+      if (memberOnly && (!file.type.startsWith('video/') || !membershipPlanId)) {
+        throw new Error('Choose a video and an active membership plan before publishing for members.');
+      }
       await uploadMedia(file, kind, token, {
         title: generatedCopy?.title,
         caption: caption.trim() || generatedCopy?.description || caption,
         durationSeconds: duration, category,
         rightsConfirmation: 'I own or have permission to publish this media.',
         audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined,
+        visibility: kind === 'post' && memberOnly ? 'members_only' : 'public',
+        membershipPlanId: kind === 'post' && memberOnly ? membershipPlanId : undefined,
       });
       const isVideoPost = kind === 'post' && file.type.startsWith('video/');
       setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : isVideoPost ? 'Video published instantly to VYRA and today’s World Feed.' : 'Photo submitted for community review.');
@@ -452,6 +469,11 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
         {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
         {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
         {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
+        {kind === 'post' && file?.type.startsWith('video/') && membershipUnlocked && <div className="member-upload-control">
+          <label className="check-line"><input type="checkbox" checked={memberOnly} onChange={e => setMemberOnly(e.target.checked)} /> <Lock size={15} /> Make this video members-only</label>
+          {memberOnly && (membershipPlans.length ? <label className="modal-label">MEMBERSHIP PLAN<select value={membershipPlanId} onChange={e => setMembershipPlanId(e.target.value)}>{membershipPlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · ₹{(plan.amount_paise / 100).toLocaleString('en-IN')}/{plan.period === 'yearly' ? 'year' : 'month'}</option>)}</select></label> : <p className="microcopy">Create an active membership plan in Settings → Monetization before publishing member-only videos.</p>)}
+          <p className="microcopy">Only active subscribers of the selected plan can load this video. It is stored in VYRA’s private member-media bucket.</p>
+        </div>}
         <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
         {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
         <button className="button button-primary button-wide" onClick={submitSingle} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
@@ -1039,6 +1061,10 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
 
 function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
   const [posts, setPosts] = useState<Post[]>([]);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipBusy, setMembershipBusy] = useState(false);
+  const [membershipMessage, setMembershipMessage] = useState('');
+  const [membershipStatusLoading, setMembershipStatusLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [display, setDisplay] = useState(profile.display_name);
   const [bio, setBio] = useState(profile.bio);
@@ -1046,6 +1072,16 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
   const [message, setMessage] = useState('');
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   useEffect(() => { callApi<{ posts: Post[] }>('profile-posts', { username: profile.username }, token).then(r => setPosts(r.posts)).catch(e => setMessage(e.message)); }, [profile.username, token]);
+  useEffect(() => {
+    if (own) { setMembershipPlans([]); return; }
+    let active = true;
+    setMembershipStatusLoading(true);
+    callApi<{ plans: any[] }>('creator-membership-plans', { creatorId: profile.id }, token)
+      .then(result => { if (active) setMembershipPlans(result.plans || []); })
+      .catch(error => { if (active) setMembershipMessage(error instanceof Error ? error.message : 'Membership plans could not load.'); })
+      .finally(() => { if (active) setMembershipStatusLoading(false); });
+    return () => { active = false; };
+  }, [own, profile.id, token]);
   async function removeCreatorVideo(post: Post) {
     if (!own || post.media_type !== 'video' || deletingPostId) return;
     if (!window.confirm('Delete this video from your creator wall? This cannot be undone.')) return;
@@ -1061,6 +1097,47 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not delete this video.');
     } finally { setDeletingPostId(null); }
+  }
+  async function subscribeToPlan(plan: any) {
+    if (membershipBusy || plan.subscribed) return;
+    setMembershipBusy(true); setMembershipMessage('');
+    try {
+      const started = await callApi<{ subscriptionId: string; keyId: string; plan: any }>('membership-start', { planId: plan.id }, token);
+      const win = window as any;
+      if (!win.Razorpay) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://checkout.razorpay.com/v1/checkout.js'; script.async = true;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error('Razorpay Checkout could not load. Check your connection and try again.'));
+          document.body.appendChild(script);
+        });
+      }
+      const RazorpayCheckout = (window as any).Razorpay;
+      if (!RazorpayCheckout) throw new Error('Razorpay Checkout is unavailable in this app version.');
+      const checkout = new RazorpayCheckout({
+        key: started.keyId, subscription_id: started.subscriptionId,
+        name: 'VYRA', description: plan.name + ' · @' + profile.username,
+        theme: { color: '#8b5cf6' },
+        handler: async (result: any) => {
+          try {
+            await callApi('membership-verify', {
+              subscriptionId: started.subscriptionId,
+              razorpayPaymentId: result.razorpay_payment_id,
+              razorpaySignature: result.razorpay_signature,
+            }, token);
+            setMembershipPlans(current => current.map(item => item.id === plan.id ? { ...item, subscribed: true } : item));
+            setMembershipMessage('You are now an active member of @' + profile.username + '!');
+          } catch (error) {
+            setMembershipMessage(error instanceof Error ? error.message : 'Payment verification is pending. Refresh before trying again.');
+          }
+        },
+        modal: { ondismiss: () => setMembershipMessage('Checkout closed. No membership was activated.') },
+      });
+      checkout.open();
+    } catch (error) {
+      setMembershipMessage(error instanceof Error ? error.message : 'Could not start membership checkout.');
+    } finally { setMembershipBusy(false); }
   }
   async function save() {
     setBusy(true); setMessage('');
@@ -1081,17 +1158,162 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
       {!editing && <><b>{profile.display_name}</b><p>{profile.bio || 'Creating my own little corner of the internet.'}</p><span className="verified-caption">{profile.is_verified ? 'Verified creator' : 'Creator on the rise'}</span></>}
       {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
       {message && <div className="form-error">{message}</div>}
-    </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
+    </div></div>
+    {!own && (membershipPlans.length > 0 || membershipStatusLoading) && <section className="member-plans-panel">
+      <div className="member-plans-heading"><div><span className="eyebrow">VYRA MEMBERSHIPS</span><h3>Join @{profile.username}'s inner circle</h3><p>Support this creator and unlock exclusive videos and member perks.</p></div><span className="member-crown"><Crown size={22} /></span></div>
+      {membershipPlans.map(plan => <article className="member-plan-card" key={plan.id}>
+        <div className="member-plan-top"><div><b>{plan.name}</b><small>{plan.description || 'Creator membership'}</small></div><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')}<small> / {plan.period === 'yearly' ? 'year' : 'month'}</small></strong></div>
+        <ul>{(Array.isArray(plan.features) ? plan.features : []).map((feature: string, index: number) => <li key={index}><CheckCircle2 size={14} />{feature}</li>)}</ul>
+        <button className={'button ' + (plan.subscribed ? 'button-soft following-button' : 'button-primary')} disabled={membershipBusy || plan.subscribed} onClick={() => void subscribeToPlan(plan)}>
+          {plan.subscribed ? '✓ You are a member' : membershipBusy ? 'Opening secure checkout…' : 'Subscribe with Razorpay'}
+        </button>
+      </article>)}
+      {membershipMessage && <p className="microcopy">{membershipMessage}</p>}
+      <p className="member-plan-footnote">Recurring billing is processed in the creator's own Razorpay merchant account. VYRA does not hold subscription funds.</p>
+    </section>}
+    <div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
     {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted playsInline preload="metadata" /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span>{own && p.media_type === 'video' && <button type="button" className="profile-tile-delete" title="Delete your video" aria-label="Delete your video" disabled={deletingPostId === p.id || !!deletingPostId} onClick={() => void removeCreatorVideo(p)}>{deletingPostId === p.id ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}</button>}</div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
   </section>;
 }
 
+
+type GroupChat = {
+  id: string; name: string; description: string; created_by: string; member_count: number;
+  role: 'admin' | 'member'; last_message_at: string; last_message: { content: string; sender_id: string; created_at: string } | null;
+};
+type GroupMessage = { id: string; group_id: string; sender_id: string; content: string; created_at: string; author?: User | null };
+
+function GroupChats({ token, user, onToast }: { token: string; user: User; onToast: (message: string) => void }) {
+  const [groups, setGroups] = useState<GroupChat[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
+  const [composer, setComposer] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
+  const [memberHandles, setMemberHandles] = useState('');
+  const [newHandles, setNewHandles] = useState('');
+  const [showAddMembers, setShowAddMembers] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const selected = groups.find(group => group.id === selectedId) || null;
+  const loadGroups = useCallback(async () => {
+    const result = await callApi<{ groups: GroupChat[] }>('dm-group-list', {}, token);
+    setGroups(result.groups || []);
+    setSelectedId(current => current || result.groups?.[0]?.id || null);
+  }, [token]);
+  useEffect(() => {
+    loadGroups().catch(error => setMessage(error instanceof Error ? error.message : 'Could not load groups.'))
+      .finally(() => setLoading(false));
+    const timer = window.setInterval(() => loadGroups().catch(() => undefined), 5000);
+    return () => window.clearInterval(timer);
+  }, [loadGroups]);
+  useEffect(() => {
+    if (!selectedId) { setMessages([]); return; }
+    let active = true;
+    const loadMessages = async () => {
+      const result = await callApi<{ messages: GroupMessage[] }>('dm-group-messages', { groupId: selectedId }, token);
+      if (active) setMessages(result.messages || []);
+    };
+    void loadMessages().catch(error => { if (active) setMessage(error instanceof Error ? error.message : 'Could not load group messages.'); });
+    const timer = window.setInterval(() => void loadMessages().catch(() => undefined), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selectedId, token]);
+  useEffect(() => { messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, selectedId]);
+  async function createGroup(event: FormEvent) {
+    event.preventDefault();
+    if (!groupName.trim() || busy) return;
+    setBusy(true); setMessage('');
+    try {
+      const result = await callApi<{ group: { id: string } }>('dm-group-create', {
+        name: groupName.trim(), description: groupDescription.trim(),
+        memberUsernames: memberHandles.split(/[ ,]+/).map(handle => handle.replace(/^@/, '')).filter(Boolean),
+      }, token);
+      setGroupName(''); setGroupDescription(''); setMemberHandles(''); setCreating(false);
+      await loadGroups(); setSelectedId(result.group.id); onToast('Your VYRA group is ready.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not create group.'); }
+    finally { setBusy(false); }
+  }
+  async function sendGroupMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !composer.trim() || busy) return;
+    const content = composer.trim(); setComposer(''); setBusy(true);
+    try {
+      await callApi('dm-group-send', { groupId: selected.id, content }, token);
+      const result = await callApi<{ messages: GroupMessage[] }>('dm-group-messages', { groupId: selected.id }, token);
+      setMessages(result.messages || []); await loadGroups();
+    } catch (error) { setComposer(content); onToast(error instanceof Error ? error.message : 'Message could not be sent.'); }
+    finally { setBusy(false); }
+  }
+  async function addMembers(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !newHandles.trim() || busy) return;
+    setBusy(true); setMessage('');
+    try {
+      const result = await callApi<{ added: number }>('dm-group-add', {
+        groupId: selected.id, memberUsernames: newHandles.split(/[ ,]+/).map(handle => handle.replace(/^@/, '')).filter(Boolean),
+      }, token);
+      setNewHandles(''); setShowAddMembers(false); await loadGroups();
+      onToast(result.added + ' member(s) added.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not add group members.'); }
+    finally { setBusy(false); }
+  }
+  async function renameGroup() {
+    if (!selected || selected.role !== 'admin') return;
+    const name = window.prompt('New group name', selected.name);
+    if (!name?.trim()) return;
+    try {
+      await callApi('dm-group-rename', { groupId: selected.id, name: name.trim() }, token);
+      await loadGroups();
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not rename group.'); }
+  }
+  async function leaveGroup() {
+    if (!selected || !window.confirm('Leave "' + selected.name + '"?')) return;
+    try {
+      await callApi('dm-group-leave', { groupId: selected.id }, token);
+      setSelectedId(null); setMessages([]); await loadGroups(); onToast('You left the group.');
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not leave group.'); }
+  }
+  return <div className="dm-group-workspace">
+    <aside className="dm-group-sidebar">
+      <div className="dm-inbox-head"><div><b>Your groups</b><small>{groups.length} group chats</small></div><button className="icon-button" title="Create group" onClick={() => setCreating(true)}><Plus size={18} /></button></div>
+      {loading && <p className="dm-empty-note">Loading groups…</p>}
+      {groups.map(group => <button key={group.id} className={'dm-group-list-item ' + (selectedId === group.id ? 'active' : '')} onClick={() => setSelectedId(group.id)}>
+        <span className="dm-group-avatar"><Users size={18} /></span><span><b>{group.name}</b><small>{group.last_message?.content || group.member_count + ' members'}</small></span><i>{group.member_count}</i>
+      </button>)}
+      {!loading && groups.length === 0 && <div className="dm-group-empty"><Users size={26} /><b>Your people, together.</b><p>Create a group and bring your community into one chat.</p><button className="button button-primary" onClick={() => setCreating(true)}>Create your first group</button></div>}
+    </aside>
+    <section className="dm-group-thread">
+      {selected ? <>
+        <header className="dm-group-thread-head"><span className="dm-group-avatar large"><Users size={19} /></span><div><b>{selected.name}</b><small>{selected.member_count} members · Group conversation</small></div><div className="dm-group-actions">{selected.role === 'admin' && <button className="icon-button" title="Rename group" onClick={() => void renameGroup()}><Pencil size={16} /></button>}{selected.role === 'admin' && <button className="icon-button" title="Add people" onClick={() => setShowAddMembers(value => !value)}><UserPlus size={17} /></button>}<button className="icon-button" title="Leave group" onClick={() => void leaveGroup()}><LogOut size={16} /></button></div></header>
+        {showAddMembers && <form className="dm-group-add-form" onSubmit={addMembers}><input value={newHandles} onChange={e => setNewHandles(e.target.value)} placeholder="@username, @anotherperson" /><button className="button button-primary" disabled={busy || !newHandles.trim()}>Add people</button></form>}
+        {message && <p className="microcopy">{message}</p>}
+        <div className="dm-group-messages">{messages.map(item => <div key={item.id} className={'dm-group-message ' + (item.sender_id === user.id ? 'mine' : '')}>
+          {item.sender_id !== user.id && <small>@{item.author?.username || 'creator'}</small>}
+          <div>{item.content}</div><time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+        </div>)}<div ref={messageEndRef} /></div>
+        <form className="dm-group-compose" onSubmit={sendGroupMessage}><textarea rows={1} value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} maxLength={2000} placeholder={'Message ' + selected.name + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={17} /></button></form>
+      </> : <div className="dm-no-selection"><Users size={34} /><h3>Make a group memory.</h3><p>Select a group or create a new one to chat with everyone together.</p></div>}
+    </section>
+    {creating && <div className="dm-group-create-backdrop"><form className="dm-group-create-card" onSubmit={createGroup}>
+      <div className="modal-top"><div><p className="eyebrow">YOUR COMMUNITY</p><h3>Create a group</h3></div><button type="button" className="icon-button" onClick={() => setCreating(false)}><X /></button></div>
+      <label>GROUP NAME<input value={groupName} onChange={e => setGroupName(e.target.value)} maxLength={60} placeholder="The creator crew" required minLength={2} /></label>
+      <label>DESCRIPTION<input value={groupDescription} onChange={e => setGroupDescription(e.target.value)} maxLength={180} placeholder="What brings this group together?" /></label>
+      <label>ADD PEOPLE <small>Optional · separate usernames with commas</small><input value={memberHandles} onChange={e => setMemberHandles(e.target.value)} placeholder="@creator_one, @creator_two" /></label>
+      {message && <p className="form-error">{message}</p>}
+      <button className="button button-primary button-wide" disabled={busy || groupName.trim().length < 2}>{busy ? 'Creating group…' : 'Create group'} <Users size={16} /></button>
+    </form></div>}
+  </div>;
+}
 
 function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCall }: {
   token: string; user: User; target: User | null; onClearTarget: () => void;
   onToast: (message: string) => void; onStartCall: (call: any) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
+  const [messageMode, setMessageMode] = useState<'direct' | 'groups'>('direct');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [inboxSearch, setInboxSearch] = useState('');
   const [syncStatus, setSyncStatus] = useState<'syncing' | 'live' | 'reconnecting'>('syncing');
@@ -1406,6 +1628,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
 
   return <section className="content-page dm-page">
     <div className="page-intro dm-page-intro"><p className="eyebrow">STAY IN THE LOOP</p><h2>Your messages.</h2><p>Chat with creators, share photos and send voice notes.</p></div>
+    <div className="dm-mode-switcher"><button className={messageMode === 'direct' ? 'active' : ''} onClick={() => setMessageMode('direct')}><MessageCircle size={16} /> Direct</button><button className={messageMode === 'groups' ? 'active' : ''} onClick={() => setMessageMode('groups')}><Users size={16} /> Groups</button></div>
+    {messageMode === 'direct' && <>
     {messages.some(message => message.e2ee_version === 1) && storedKey && !identity && <form className="legacy-restore-card" onSubmit={unlockLegacyMessages}>
       <div><b>Restore older messages</b><small>Only conversations from VYRA’s previous chat system need this. New chats work without it.</small></div>
       <label><span>VYRA password</span><input type="password" value={password} onChange={event => setPassword(event.target.value)} required minLength={10} autoComplete="current-password" /></label>
@@ -1468,6 +1692,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
         </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a message request or accepted chat, or visit a creator profile to send the first message.</p></div>}
       </section>
     </div>
+    </>}
+    {messageMode === 'groups' && <GroupChats token={token} user={user} onToast={onToast} />}
   </section>;
 }
 
@@ -1645,24 +1871,51 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
   const [rights, setRights] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [provider, setProvider] = useState<'razorpay' | 'stripe'>('razorpay');
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
-  const [paymentStatus, setPaymentStatus] = useState<any>(null);
-  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'payments' | 'app' | 'about'>('account');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [billingConsent, setBillingConsent] = useState(false);
+  const [monetizationStatus, setMonetizationStatus] = useState<any>(null);
+  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'monetization' | 'app' | 'about'>('account');
   const [paymentMessage, setPaymentMessage] = useState('');
+  const [planName, setPlanName] = useState('');
+  const [planDescription, setPlanDescription] = useState('');
+  const [planPrice, setPlanPrice] = useState('99');
+  const [planPeriod, setPlanPeriod] = useState<'monthly' | 'yearly'>('monthly');
+  const [planFeatures, setPlanFeatures] = useState('Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A');
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planMessage, setPlanMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
-  useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
+  const refreshMonetization = useCallback(() => callApi<any>('membership-status', {}, token).then(setMonetizationStatus).catch(() => undefined), [token]);
+  useEffect(() => { void refreshMonetization(); }, [refreshMonetization]);
   async function savePaymentKeys() {
     setBusy(true); setPaymentMessage('');
     try {
-      const payload = provider === 'razorpay' ? { provider, keyId, keySecret } : { provider, secretKey: keySecret };
-      await callApi('connect-payment', payload, token);
-      setKeyId(''); setKeySecret('');
-      setPaymentStatus({ provider, connected_at: new Date().toISOString() });
-      setPaymentMessage('Your payment credentials are encrypted and stored on the server.');
-    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not save payment credentials.'); }
+      await callApi('connect-payment', { provider: 'razorpay', keyId, keySecret, webhookSecret, consentAccepted: billingConsent }, token);
+      setKeyId(''); setKeySecret(''); setWebhookSecret(''); setBillingConsent(false);
+      await refreshMonetization();
+      setPaymentMessage('Razorpay is connected. Finish the one-time webhook setup before accepting live subscriptions.');
+    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not connect Razorpay.'); }
     finally { setBusy(false); }
+  }
+  async function createMembershipPlan() {
+    setPlanBusy(true); setPlanMessage('');
+    try {
+      await callApi('membership-plan-create', {
+        name: planName, description: planDescription, amountRupees: Number(planPrice), period: planPeriod,
+        interval: 1, features: planFeatures.split('\n').map(value => value.trim()).filter(Boolean).slice(0, 8),
+      }, token);
+      setPlanName(''); setPlanDescription(''); setPlanPrice('99');
+      setPlanFeatures('Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A');
+      await refreshMonetization(); setPlanMessage('Your Razorpay membership plan is ready.');
+    } catch (error) { setPlanMessage(error instanceof Error ? error.message : 'Could not create membership plan.'); }
+    finally { setPlanBusy(false); }
+  }
+  async function toggleMembershipPlan(plan: any) {
+    try {
+      await callApi('membership-plan-toggle', { planId: plan.id, isActive: !plan.is_active }, token);
+      await refreshMonetization();
+    } catch (error) { setPlanMessage(error instanceof Error ? error.message : 'Could not update membership plan.'); }
   }
   async function addTrack() {
     if (!audioFile || !title.trim() || !rights) return setMessage('Choose an audio file, add a title and confirm the rights.');
@@ -1682,7 +1935,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         <button className={activeSection === 'notifications' ? 'active' : ''} onClick={() => setActiveSection('notifications')}><Bell /> Notifications</button>
         <button className={activeSection === 'privacy' ? 'active' : ''} onClick={() => setActiveSection('privacy')}><ShieldCheck /> Privacy</button>
         <button className={activeSection === 'creator' ? 'active' : ''} onClick={() => setActiveSection('creator')}><Music2 /> Creator tools</button>
-        <button className={activeSection === 'payments' ? 'active' : ''} onClick={() => setActiveSection('payments')}><Crown /> Payments</button>
+        <button className={activeSection === 'monetization' ? 'active' : ''} onClick={() => setActiveSection('monetization')}><Crown /> Monetization</button>
         <button className={activeSection === 'app' ? 'active' : ''} onClick={() => setActiveSection('app')}><Settings /> App settings</button>
         <button className={activeSection === 'about' ? 'active' : ''} onClick={() => setActiveSection('about')}><Activity /> About VYRA</button>
       </nav>
@@ -1703,18 +1956,51 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>)}
-        {activeSection === 'payments' && (<div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
-      {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
-      <div className="settings-form">
-        <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
-        {provider === 'razorpay' && <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>}
-        <label>{provider === 'razorpay' ? 'RAZORPAY KEY SECRET' : 'STRIPE SECRET KEY'}<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder={provider === 'razorpay' ? 'Your Razorpay secret' : 'sk_test_… or sk_live_…'} autoComplete="new-password" /></label>
-        <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keySecret || (provider === 'razorpay' && !keyId)}>{busy ? 'Encrypting securely…' : 'Save payment credentials'}</button>
-        {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
-      </div>
-      <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
-    </div>)}
-        {activeSection === 'app' && <>
+        {activeSection === 'monetization' && <div className="settings-card monetization-settings-card">
+          <div className="settings-card-head"><Crown /><div><h3>Monetize your channel</h3><p>Unlock paid channel memberships, private videos and recurring creator income.</p></div></div>
+          <div className="monetization-progress">
+            <div className="monetization-progress-copy"><span>FOLLOWER MILESTONE</span><b>{(monetizationStatus?.followerCount ?? user.follower_count).toLocaleString('en-IN')} / 20,000</b></div>
+            <div className="monetization-progress-track"><i style={{ width: Math.min(100, ((monetizationStatus?.followerCount ?? user.follower_count) / 20000) * 100) + '%' }} /></div>
+            <p>{monetizationStatus?.unlocked ? 'Your creator monetization tools are unlocked.' : 'Reach 20,000 followers to unlock paid channel subscriptions and member-only videos.'}</p>
+          </div>
+          {!monetizationStatus?.unlocked && <div className="monetization-locked"><Lock size={22} /><div><b>Creator monetization is locked</b><p>You need 20,000 real followers. VYRA checks your follower count on the server before connecting payments, creating plans or publishing private videos.</p></div></div>}
+          {monetizationStatus?.unlocked && !monetizationStatus?.connection && <div className="monetization-connect-flow">
+            <div className="monetization-step"><span>01</span><div><b>Connect your Razorpay merchant account</b><p>Use API credentials generated in your own Razorpay Dashboard. Start with a test key pair before switching to live mode.</p></div></div>
+            <div className="settings-form">
+              <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>
+              <label>RAZORPAY KEY SECRET<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder="Paste your Razorpay Key Secret" autoComplete="new-password" /></label>
+              <label>RAZORPAY WEBHOOK SECRET<input type="password" value={webhookSecret} onChange={e => setWebhookSecret(e.target.value)} placeholder="Create a unique webhook secret in Razorpay" autoComplete="new-password" /></label>
+              <div className="billing-consent">
+                <label className="check-line"><input type="checkbox" checked={billingConsent} onChange={e => setBillingConsent(e.target.checked)} /> I allow VYRA to store my Razorpay API credentials in encrypted form and use them to create and manage recurring subscriptions on my behalf.</label>
+                <p>Subscription charges are processed by Razorpay in my own merchant account and settlements go directly to that account. VYRA does not receive or hold my subscription funds.</p>
+              </div>
+              <button className="button button-primary button-wide" onClick={savePaymentKeys} disabled={busy || !keyId.trim() || !keySecret || !webhookSecret || !billingConsent}>{busy ? 'Validating and encrypting…' : 'I agree — connect Razorpay securely'}</button>
+              {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
+            </div>
+            <p className="payment-note"><ShieldCheck /><span>VYRA validates your key pair with Razorpay, encrypts your Key ID, Key Secret and webhook secret with AES-GCM, and never sends those secrets back to your device or stores them in your public profile.</span></p>
+          </div>}
+          {monetizationStatus?.connection && <>
+            <div className="monetization-connected"><CheckCircle2 size={20} /><div><b>Razorpay connected · {monetizationStatus.connection.keyMode === 'live' ? 'Live mode' : 'Test mode'}</b><small>Connected {monetizationStatus.connection.connectedAt ? new Date(monetizationStatus.connection.connectedAt).toLocaleDateString() : 'successfully'} · {monetizationStatus.activeSubscribers || 0} active member(s)</small></div><span className="badge-muted">Encrypted</span></div>
+            <div className="webhook-setup-card"><b>One-time webhook setup</b><p>In Razorpay Dashboard → Account & Settings → Webhooks, add this URL and enter the same webhook secret used above.</p><code>{monetizationStatus.webhookUrl}</code><small>Subscribe to: subscription.activated, subscription.charged, subscription.halted, subscription.cancelled, subscription.completed, subscription.paused, subscription.resumed</small></div>
+            <div className="monetization-step"><span>02</span><div><b>Create a membership plan</b><p>Choose a price and tell supporters exactly what their membership includes.</p></div></div>
+            <div className="settings-form plan-create-form">
+              <label>PLAN NAME<input value={planName} onChange={e => setPlanName(e.target.value)} maxLength={60} placeholder="VYRA Inner Circle" /></label>
+              <label>DESCRIPTION<input value={planDescription} onChange={e => setPlanDescription(e.target.value)} maxLength={240} placeholder="A closer look behind the scenes" /></label>
+              <div className="plan-price-row"><label>PRICE (INR)<input type="number" min="1" max="1000000" step="0.01" value={planPrice} onChange={e => setPlanPrice(e.target.value)} placeholder="99" /></label><label>BILLING CYCLE<select value={planPeriod} onChange={e => setPlanPeriod(e.target.value as 'monthly' | 'yearly')}><option value="monthly">Every month</option><option value="yearly">Every year</option></select></label></div>
+              <label>MEMBER BENEFITS <small>One benefit per line, up to 8</small><textarea rows={4} value={planFeatures} onChange={e => setPlanFeatures(e.target.value)} maxLength={650} placeholder={'Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A'} /></label>
+              <button className="button button-primary" onClick={createMembershipPlan} disabled={planBusy || !planName.trim() || Number(planPrice) < 1 || !planFeatures.trim()}>{planBusy ? 'Creating in Razorpay…' : 'Create membership plan'} <Plus size={15} /></button>
+              {planMessage && <p className="microcopy">{planMessage}</p>}
+            </div>
+            <div className="membership-plan-list"><div className="settings-card-head"><Crown /><div><h3>Your membership plans</h3><p>Pause a plan to stop new members joining. Existing active memberships are not silently cancelled.</p></div></div>
+              {(monetizationStatus.plans || []).length ? monetizationStatus.plans.map((plan: any) => <article className="membership-plan-row" key={plan.id}>
+                <div><b>{plan.name}</b><small>₹{(plan.amount_paise / 100).toLocaleString('en-IN')} / {plan.period === 'yearly' ? 'year' : 'month'} · {(Array.isArray(plan.features) ? plan.features : []).length} benefits</small></div>
+                <span className={plan.is_active ? 'plan-active-pill' : 'plan-paused-pill'}>{plan.is_active ? 'Active' : 'Paused'}</span>
+                <button className="button button-soft" onClick={() => void toggleMembershipPlan(plan)}>{plan.is_active ? 'Pause' : 'Activate'}</button>
+              </article>) : <p className="microcopy">Your first plan will appear here after you create it.</p>}
+            </div>
+          </>}
+          <p className="member-plan-footnote">Creators remain responsible for their Razorpay merchant account, KYC, applicable taxes, refunds and subscription terms. VYRA creates and manages subscriptions in the connected creator account.</p>
+        </div>}        {activeSection === 'app' && <>
           <div className="settings-card"><div className="settings-card-head"><Settings /><div><h3>App preferences</h3><p>Personalize playback and appearance.</p></div></div>
             <div className="settings-shortcut-row"><div><b>Video sound</b><small>Control audio across VYRA videos.</small></div><button className={'settings-toggle ' + (soundEnabled ? 'on' : '')} onClick={onToggleSound}>{soundEnabled ? 'Sound on' : 'Sound off'}</button></div>
             <div className="settings-shortcut-row"><div><b>Dark appearance</b><small>Switch between dark and light surfaces.</small></div><button className={'settings-toggle ' + (darkTheme ? 'on' : '')} onClick={onToggleTheme}>{darkTheme ? 'Dark on' : 'Light on'}</button></div>
@@ -2042,7 +2328,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     try { localStorage.setItem('vyra-mobile-permissions-seen:' + user.id, 'true'); } catch { /* Local storage may be unavailable. */ }
     setPermissionsOpen(false);
   }} />}
-  {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
+  {uploadOpen && <UploadModal token={token} user={user} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <VYRAPlayer src={storyOpen.media_url} soundEnabled={soundEnabled} onToggleSound={toggleSound} autoPlay className="story-video-player" /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
