@@ -76,7 +76,7 @@ export async function uploadChatAttachment(
   const signed = await callApi<{ path: string; uploadToken: string }>("dm-attachment-upload", {
     conversationId, messageType, mimeType: originalMime, size: blob.size,
   }, token);
-  const { error } = await supabase.storage.from("media").uploadToSignedUrl(
+  const { error } = await supabase.storage.from("private-chat").uploadToSignedUrl(
     signed.path,
     signed.uploadToken,
     blob,
