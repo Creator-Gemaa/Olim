@@ -935,7 +935,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
   const [composer, setComposer] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [keyLoading, setKeyLoading] = useState(true);
+  const [keyLoading, setKeyLoading] = useState(false);
+  const [legacyKeyChecked, setLegacyKeyChecked] = useState(false);
   const [storedKey, setStoredKey] = useState<StoredE2EEIdentity | null>(null);
   const [identity, setIdentity] = useState<E2EEIdentity | null>(null);
   const [password, setPassword] = useState('');
@@ -956,17 +957,6 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
     setSyncStatus('live');
   }, [token]);
 
-  useEffect(() => {
-    let active = true;
-    callApi<{ key: (StoredE2EEIdentity & { username: string }) | null }>('e2ee-key-get', { username: user.username }, token)
-      .then(result => {
-        if (!active) return;
-        setStoredKey(result.key);
-      })
-      .catch(error => { if (active) setKeyError(error instanceof Error ? error.message : 'Older message history is unavailable.'); })
-      .finally(() => { if (active) setKeyLoading(false); });
-    return () => { active = false; };
-  }, [token, user.username]);
 
   useEffect(() => {
     loadInbox().catch(error => onToast(error instanceof Error ? error.message : 'Could not load messages.'))
@@ -1014,6 +1004,18 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
   const chats = conversations.filter(item => item.status === 'accepted');
   const matchesInbox = (item: DMConversation) => !inboxSearch.trim()
     || item.otherUser.username.toLowerCase().includes(inboxSearch.trim().replace(/^@/, '').toLowerCase());
+
+  useEffect(() => {
+    if (legacyKeyChecked || !messages.some(message => message.e2ee_version === 1)) return;
+    let active = true;
+    setLegacyKeyChecked(true);
+    setKeyLoading(true);
+    callApi<{ key: (StoredE2EEIdentity & { username: string }) | null }>('e2ee-key-get', { username: user.username }, token)
+      .then(result => { if (active) setStoredKey(result.key); })
+      .catch(error => { if (active) setKeyError(error instanceof Error ? error.message : 'Older message history is unavailable.'); })
+      .finally(() => { if (active) setKeyLoading(false); });
+    return () => { active = false; };
+  }, [messages, legacyKeyChecked, token, user.username]);
 
   async function unlockLegacyMessages(event: FormEvent) {
     event.preventDefault();
