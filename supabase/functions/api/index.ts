@@ -923,21 +923,46 @@ Deno.serve(async (req: Request) => {
         return fail("Conversation not found.", 404, origin);
       }
       const { data: messages, error } = await db.from("dm_messages")
-        .select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,shared_post_id,e2ee_version,created_at,shared_post:posts!dm_messages_shared_post_id_fkey(id,caption,media_path,media_type,kind,created_at,author:profiles!posts_user_id_fkey(*))")
+        .select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,shared_post_id,e2ee_version,created_at,shared_post:posts!dm_messages_shared_post_id_fkey(id,user_id,caption,media_path,media_bucket,visibility,membership_plan_id,media_type,kind,created_at,author:profiles!posts_user_id_fkey(*))")
         .eq("conversation_id", conversationId).order("created_at", { ascending: true }).limit(200);
       if (error) throw error;
+      const memberShares = (messages || []).map((message: any) => message.shared_post)
+        .filter((post: any) => post?.visibility === "members_only" && post.user_id !== current.profile.id);
+      const shareCreatorIds = [...new Set(memberShares.map((post: any) => post.user_id))];
+      const { data: memberships, error: membershipError } = shareCreatorIds.length
+        ? await db.from("subscriptions").select("creator_id,membership_plan_id")
+            .eq("subscriber_id", current.profile.id).eq("status", "active").in("creator_id", shareCreatorIds)
+        : { data: [], error: null };
+      if (membershipError) throw membershipError;
+      const shareAccess = new Set((memberships || []).map((item: any) => item.creator_id + ":" + item.membership_plan_id));
       return response({
-        messages: (messages || []).map((message: any) => ({
-          id: message.id, conversation_id: message.conversation_id, sender_id: message.sender_id,
-          content: message.content, message_type: message.message_type || "text",
-          media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
-          attachment_iv: message.attachment_iv, attachment_mime: message.attachment_mime,
-          e2ee_version: message.e2ee_version || 0, created_at: message.created_at,
-          shared_post: message.shared_post ? {
-            id: message.shared_post.id, caption: message.shared_post.caption,
-            media_url: publicMedia(message.shared_post.media_path), media_type: message.shared_post.media_type,
-            kind: message.shared_post.kind, author: safeUser(message.shared_post.author),
-          } : null,
+        messages: await Promise.all((messages || []).map(async (message: any) => {
+          const shared = message.shared_post;
+          const sharedAllowed = !shared || shared.visibility !== "members_only"
+            || shared.user_id === current.profile.id
+            || (!!shared.membership_plan_id && shareAccess.has(shared.user_id + ":" + shared.membership_plan_id));
+          let sharedMediaUrl: string | null = null;
+          if (shared && sharedAllowed) {
+            if (shared.media_bucket === "member-media") {
+              const { data: signed, error: signedError } = await db.storage.from("member-media")
+                .createSignedUrl(shared.media_path, 60 * 60);
+              sharedMediaUrl = signedError ? null : signed?.signedUrl || null;
+            } else {
+              sharedMediaUrl = publicMedia(shared.media_path);
+            }
+          }
+          return {
+            id: message.id, conversation_id: message.conversation_id, sender_id: message.sender_id,
+            content: message.content, message_type: message.message_type || "text",
+            media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
+            attachment_iv: message.attachment_iv, attachment_mime: message.attachment_mime,
+            e2ee_version: message.e2ee_version || 0, created_at: message.created_at,
+            shared_post: shared && sharedAllowed && sharedMediaUrl ? {
+              id: shared.id, caption: shared.caption,
+              media_url: sharedMediaUrl, media_type: shared.media_type,
+              kind: shared.kind, author: safeUser(shared.author),
+            } : null,
+          };
         }))
       }, 200, origin);
     }
