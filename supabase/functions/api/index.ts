@@ -201,6 +201,14 @@ async function enrichPosts(rows: any[], viewerId: string) {
     liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
   }));
 }
+
+async function getGroupMembership(groupId: string, userId: string) {
+  const { data, error } = await db.from("dm_group_members")
+    .select("group_id,user_id,role").eq("group_id", groupId).eq("user_id", userId).maybeSingle();
+  if (error) throw error;
+  return data || null;
+}
+
 async function authRateLimit(req: Request) {
   const address = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown";
   const ipHash = await digest("fameloop-rate:" + address);
@@ -542,52 +550,260 @@ Deno.serve(async (req: Request) => {
     if (action === "dm-inbox") {
       const current = requireUser();
       const userId = current.profile.id;
-      const [aResult, bResult] = await Promise.all([
+      const [aResult, bResult, membershipResult] = await Promise.all([
         db.from("dm_conversations").select("*").eq("user_a", userId).order("last_message_at", { ascending: false }).limit(100),
         db.from("dm_conversations").select("*").eq("user_b", userId).order("last_message_at", { ascending: false }).limit(100),
+        db.from("dm_group_members").select("group_id,role,joined_at").eq("user_id", userId).order("joined_at", { ascending: false }).limit(100),
       ]);
       if (aResult.error) throw aResult.error;
       if (bResult.error) throw bResult.error;
+      if (membershipResult.error) throw membershipResult.error;
       const rows = [...(aResult.data || []), ...(bResult.data || [])]
         .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
-      if (!rows.length) return response({ conversations: [] }, 200, origin);
-      const otherIds = [...new Set(rows.map((row: any) => row.user_a === userId ? row.user_b : row.user_a))];
-      const { data: people, error: peopleError } = await db.from("profiles")
-        .select("id,username,display_name,bio,avatar_path,is_verified,follower_count,following_count,posts_count,is_admin")
-        .in("id", otherIds);
-      if (peopleError) throw peopleError;
-      const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
-      const ids = rows.map((row: any) => row.id);
-      const { data: recentMessages, error: recentError } = await db.from("dm_messages")
-        .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
-        .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
-      if (recentError) throw recentError;
-      const latestByConversation = new Map<string, any>();
-      for (const message of recentMessages || []) {
-        if (!latestByConversation.has(message.conversation_id)) latestByConversation.set(message.conversation_id, message);
+      const directConversations: any[] = [];
+      if (rows.length) {
+        const otherIds = [...new Set(rows.map((row: any) => row.user_a === userId ? row.user_b : row.user_a))];
+        const { data: people, error: peopleError } = await db.from("profiles")
+          .select("id,username,display_name,bio,avatar_path,is_verified,follower_count,following_count,posts_count,is_admin")
+          .in("id", otherIds);
+        if (peopleError) throw peopleError;
+        const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
+        const ids = rows.map((row: any) => row.id);
+        const { data: recentMessages, error: recentError } = await db.from("dm_messages")
+          .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
+          .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
+        if (recentError) throw recentError;
+        const latestByConversation = new Map<string, any>();
+        for (const message of recentMessages || []) {
+          if (!latestByConversation.has(message.conversation_id)) latestByConversation.set(message.conversation_id, message);
+        }
+        directConversations.push(...rows.map((row: any) => {
+          const otherId = row.user_a === userId ? row.user_b : row.user_a;
+          const latest = latestByConversation.get(row.id) || null;
+          return {
+            id: row.id, type: "direct", is_group: false, status: row.status, requester_id: row.requester_id,
+            created_at: row.created_at, last_message_at: row.last_message_at,
+            otherUser: safeUser(peopleById.get(otherId)),
+            last_message: latest ? {
+              ...latest,
+              preview: latest.e2ee_version === 1
+                ? latest.message_type === "image" ? "Older encrypted photo"
+                  : latest.message_type === "voice" ? "Older encrypted voice note"
+                  : "Older encrypted message"
+                : latest.message_type === "image" ? "Photo"
+                  : latest.message_type === "voice" ? "Voice note"
+                  : latest.message_type === "shared_post" ? "Shared a video"
+                  : String(latest.content || "").slice(0, 100),
+            } : null,
+          };
+        }).filter((row: any) => row.otherUser));
       }
-      const conversations = rows.map((row: any) => {
-        const otherId = row.user_a === userId ? row.user_b : row.user_a;
-        const latest = latestByConversation.get(row.id) || null;
-        return {
-          id: row.id, status: row.status, requester_id: row.requester_id,
-          created_at: row.created_at, last_message_at: row.last_message_at,
-          otherUser: safeUser(peopleById.get(otherId)),
-          last_message: latest ? {
-            ...latest,
-            preview: latest.e2ee_version === 1
-              ? latest.message_type === "image" ? "Older encrypted photo"
-                : latest.message_type === "voice" ? "Older encrypted voice note"
-                : "Older encrypted message"
-              : latest.message_type === "image" ? "Photo"
-                : latest.message_type === "voice" ? "Voice note"
-                : latest.message_type === "shared_post" ? "Shared a video"
-                : String(latest.content || "").slice(0, 100),
-          } : null,
-        };
-      }).filter((row: any) => row.otherUser);
+      const groupIds = [...new Set((membershipResult.data || []).map((row: any) => row.group_id))];
+      const groupConversations: any[] = [];
+      if (groupIds.length) {
+        const [{ data: groups, error: groupsError }, { data: members, error: membersError }, { data: latest, error: latestError }] = await Promise.all([
+          db.from("dm_groups").select("id,name,created_by,created_at,last_message_at").in("id", groupIds),
+          db.from("dm_group_members").select("group_id,user_id,role").in("group_id", groupIds),
+          db.from("dm_group_messages").select("group_id,content,sender_id,message_type,created_at")
+            .in("group_id", groupIds).order("created_at", { ascending: false }).limit(500),
+        ]);
+        if (groupsError) throw groupsError;
+        if (membersError) throw membersError;
+        if (latestError) throw latestError;
+        const latestByGroup = new Map<string, any>();
+        for (const message of latest || []) if (!latestByGroup.has(message.group_id)) latestByGroup.set(message.group_id, message);
+        const memberCount = new Map<string, number>();
+        for (const member of members || []) memberCount.set(member.group_id, (memberCount.get(member.group_id) || 0) + 1);
+        groupConversations.push(...(groups || []).map((group: any) => {
+          const last = latestByGroup.get(group.id) || null;
+          return {
+            id: "group:" + group.id, group_id: group.id, type: "group", is_group: true,
+            group_name: group.name, group_member_count: memberCount.get(group.id) || 0,
+            status: "accepted", requester_id: userId,
+            created_at: group.created_at, last_message_at: group.last_message_at,
+            otherUser: {
+              id: group.id, username: group.name, display_name: group.name,
+              bio: "", avatar_url: null, is_verified: false, follower_count: 0,
+              following_count: 0, posts_count: 0,
+            },
+            last_message: last ? {
+              ...last,
+              preview: last.message_type === "image" ? "Photo"
+                : last.message_type === "voice" ? "Voice note"
+                : String(last.content || "").slice(0, 100),
+            } : null,
+          };
+        }));
+      }
+      const conversations = [...directConversations, ...groupConversations]
+        .sort((a: any, b: any) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
       return response({ conversations }, 200, origin);
     }
+    if (action === "dm-group-create") {
+      const current = requireUser();
+      const name = String(body.name || "").trim().slice(0, 60);
+      const rawUsernames = Array.isArray(body.usernames) ? body.usernames : [];
+      const usernames = [...new Set(rawUsernames.map((value: unknown) => String(value).trim().toLowerCase().replace(/^@/, "")).filter(Boolean))];
+      if (name.length < 2 || usernames.length < 1 || usernames.length > 19) {
+        return fail("Enter a group name and between 1 and 19 other usernames.", 422, origin);
+      }
+      const { data: people, error: peopleError } = await db.from("profiles")
+        .select("id,username").in("username", usernames);
+      if (peopleError) throw peopleError;
+      const found = new Set((people || []).map((person: any) => person.username));
+      const missing = usernames.filter((username: string) => !found.has(username));
+      if (missing.length) return fail("These usernames were not found: " + missing.map((name: string) => "@" + name).join(", "), 404, origin);
+      const memberIds = [...new Set([current.profile.id, ...(people || []).map((person: any) => person.id)])];
+      if (memberIds.length < 2) return fail("Add at least one other creator to the group.", 422, origin);
+      const { data: group, error } = await db.from("dm_groups").insert({
+        name, created_by: current.profile.id,
+      }).select("id,name,created_by,created_at,last_message_at").single();
+      if (error) throw error;
+      const { error: membersError } = await db.from("dm_group_members").insert(memberIds.map((userId: string) => ({
+        group_id: group.id, user_id: userId, role: userId === current.profile.id ? "admin" : "member",
+      })));
+      if (membersError) throw membersError;
+      await db.from("notifications").insert(memberIds.filter((id: string) => id !== current.profile.id).map((id: string) => ({
+        user_id: id, actor_id: current.profile.id, type: "group_invite",
+        message: "@" + current.profile.username + " added you to the group " + name + ".",
+      })));
+      await audit(current.profile.id, "create_dm_group", group.id, { members: memberIds.length });
+      return response({ group: { ...group, member_count: memberIds.length } }, 201, origin);
+    }
+    if (action === "dm-group-add-members") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const role = await getGroupMembership(groupId, current.profile.id);
+      if (!role || role.role !== "admin") return fail("Only group admins can add members.", 403, origin);
+      const usernames = Array.isArray(body.usernames)
+        ? [...new Set(body.usernames.map((value: unknown) => String(value).trim().toLowerCase().replace(/^@/, "")).filter(Boolean))]
+        : [];
+      if (!usernames.length || usernames.length > 19) return fail("Enter between 1 and 19 usernames.", 422, origin);
+      const { data: people, error } = await db.from("profiles").select("id,username").in("username", usernames);
+      if (error) throw error;
+      if ((people || []).length !== usernames.length) return fail("One or more usernames could not be found.", 404, origin);
+      const { count, error: countError } = await db.from("dm_group_members")
+        .select("user_id", { count: "exact", head: true }).eq("group_id", groupId);
+      if (countError) throw countError;
+      const newMembers = (people || []).filter((person: any) => person.id !== current.profile.id);
+      if ((count || 0) + newMembers.length > 30) return fail("Groups can have up to 30 members.", 422, origin);
+      const { data: existing, error: existingError } = await db.from("dm_group_members")
+        .select("user_id").eq("group_id", groupId);
+      if (existingError) throw existingError;
+      const existingIds = new Set((existing || []).map((row: any) => row.user_id));
+      const additions = newMembers.filter((person: any) => !existingIds.has(person.id));
+      if (!additions.length) return fail("Those creators are already in this group.", 409, origin);
+      const { error: insertError } = await db.from("dm_group_members").insert(additions.map((person: any) => ({
+        group_id: groupId, user_id: person.id, role: "member",
+      })));
+      if (insertError) throw insertError;
+      await db.from("notifications").insert(additions.map((person: any) => ({
+        user_id: person.id, actor_id: current.profile.id, type: "group_invite",
+        message: "@" + current.profile.username + " added you to a VYRA group.",
+      })));
+      return response({ added: additions.length }, 200, origin);
+    }
+    if (action === "dm-group-leave") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const membership = await getGroupMembership(groupId, current.profile.id);
+      if (!membership) return fail("You are not a member of this group.", 404, origin);
+      const { data: remaining, error: remainError } = await db.from("dm_group_members")
+        .select("user_id,role").eq("group_id", groupId).neq("user_id", current.profile.id);
+      if (remainError) throw remainError;
+      if (membership.role === "admin" && remaining?.length && !remaining.some((row: any) => row.role === "admin")) {
+        const { error: promoteError } = await db.from("dm_group_members").update({ role: "admin" })
+          .eq("group_id", groupId).eq("user_id", remaining[0].user_id);
+        if (promoteError) throw promoteError;
+      }
+      const { error } = await db.from("dm_group_members").delete()
+        .eq("group_id", groupId).eq("user_id", current.profile.id);
+      if (error) throw error;
+      if (!remaining?.length) await db.from("dm_groups").delete().eq("id", groupId);
+      return response({ ok: true }, 200, origin);
+    }
+    if (action === "dm-group-messages") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const membership = await getGroupMembership(groupId, current.profile.id);
+      if (!membership) return fail("Group not found.", 404, origin);
+      const { data, error } = await db.from("dm_group_messages")
+        .select("id,group_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,created_at,sender:profiles!dm_group_messages_sender_id_fkey(*)")
+        .eq("group_id", groupId).order("created_at", { ascending: true }).limit(200);
+      if (error) throw error;
+      return response({ messages: (data || []).map((message: any) => ({
+        ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
+        sender: safeUser(message.sender),
+      })) }, 200, origin);
+    }
+    if (action === "dm-group-attachment-upload") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const mime = String(body.mimeType || "");
+      const size = Number(body.size || 0);
+      const messageType = String(body.messageType || "");
+      const allowed = messageType === "image"
+        ? ["image/jpeg","image/png","image/webp"]
+        : messageType === "voice" ? ["audio/webm","audio/ogg","audio/mp4","audio/mpeg"] : [];
+      if (!await getGroupMembership(groupId, current.profile.id)) return fail("You are not a member of this group.", 403, origin);
+      if (!allowed.includes(mime) || !Number.isFinite(size) || size < 1 || size > 15 * 1024 * 1024) {
+        return fail("This group attachment type or size is not supported.", 422, origin);
+      }
+      const path = current.profile.id + "/groups/" + groupId + "/" + crypto.randomUUID() + ".bin";
+      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      if (error || !data?.token) throw error || new Error("Could not create a secure group upload URL.");
+      return response({ path, uploadToken: data.token }, 200, origin);
+    }
+    if (action === "dm-group-send") {
+      const current = requireUser();
+      const groupId = String(body.groupId || "");
+      const content = String(body.content || "");
+      const messageType = String(body.messageType || "text");
+      const attachmentPath = String(body.attachmentPath || "");
+      const attachmentMime = String(body.attachmentMime || "");
+      if (!await getGroupMembership(groupId, current.profile.id)) return fail("You are not a member of this group.", 403, origin);
+      if (!content.trim() || content.length > 1000) return fail("Messages must contain 1–1000 characters.", 422, origin);
+      if (!["text","image","voice"].includes(messageType)) return fail("Unsupported group message type.", 422, origin);
+      if (messageType === "text" && attachmentPath) return fail("Text messages cannot contain attachment data.", 422, origin);
+      if (messageType !== "text") {
+        if (!attachmentPath.startsWith(current.profile.id + "/groups/" + groupId + "/")
+          || !["image/jpeg","image/png","image/webp","audio/webm","audio/ogg","audio/mp4","audio/mpeg"].includes(attachmentMime)
+          || !(await storageFileExists(attachmentPath))) return fail("Group attachment could not be verified.", 422, origin);
+      }
+      const { data: message, error } = await db.from("dm_group_messages").insert({
+        group_id: groupId, sender_id: current.profile.id, content,
+        message_type: messageType, attachment_path: messageType === "text" ? null : attachmentPath,
+        attachment_mime: messageType === "text" ? null : attachmentMime,
+      }).select("id,group_id,sender_id,content,message_type,attachment_path,attachment_mime,created_at").single();
+      if (error) throw error;
+      await db.from("dm_groups").update({ last_message_at: message.created_at }).eq("id", groupId);
+      const { data: members, error: membersError } = await db.from("dm_group_members")
+        .select("user_id").eq("group_id", groupId).neq("user_id", current.profile.id);
+      if (membersError) throw membersError;
+      if (members?.length) await db.from("notifications").insert(members.map((member: any) => ({
+        user_id: member.user_id, actor_id: current.profile.id, type: "group_message",
+        message: "@" + current.profile.username + " sent a message in your group.",
+      })));
+      return response({ message: { ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null } }, 201, origin);
+    }
+    if (action === "dm-group-delete-message") {
+      const current = requireUser();
+      const messageId = String(body.messageId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(messageId)) return fail("Choose a valid group message.", 422, origin);
+      const { data: message, error } = await db.from("dm_group_messages")
+        .select("id,group_id,sender_id,attachment_path").eq("id", messageId).eq("sender_id", current.profile.id).maybeSingle();
+      if (error) throw error;
+      if (!message || !await getGroupMembership(message.group_id, current.profile.id)) return fail("Only your own group messages can be removed.", 404, origin);
+      const { error: removeError } = await db.from("dm_group_messages").delete().eq("id", messageId).eq("sender_id", current.profile.id);
+      if (removeError) throw removeError;
+      let storageCleanupPending = false;
+      if (message.attachment_path) {
+        const { error: storageError } = await db.storage.from("media").remove([message.attachment_path]);
+        storageCleanupPending = !!storageError;
+      }
+      return response({ ok: true, storageCleanupPending }, 200, origin);
+    }
+
 
     if (action === "e2ee-key-get") {
       const current = requireUser();
