@@ -1871,24 +1871,51 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
   const [rights, setRights] = useState(false);
   const [message, setMessage] = useState('');
   const [busy, setBusy] = useState(false);
-  const [provider, setProvider] = useState<'razorpay' | 'stripe'>('razorpay');
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
-  const [paymentStatus, setPaymentStatus] = useState<any>(null);
-  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'payments' | 'app' | 'about'>('account');
+  const [webhookSecret, setWebhookSecret] = useState('');
+  const [billingConsent, setBillingConsent] = useState(false);
+  const [monetizationStatus, setMonetizationStatus] = useState<any>(null);
+  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'monetization' | 'app' | 'about'>('account');
   const [paymentMessage, setPaymentMessage] = useState('');
+  const [planName, setPlanName] = useState('');
+  const [planDescription, setPlanDescription] = useState('');
+  const [planPrice, setPlanPrice] = useState('99');
+  const [planPeriod, setPlanPeriod] = useState<'monthly' | 'yearly'>('monthly');
+  const [planFeatures, setPlanFeatures] = useState('Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A');
+  const [planBusy, setPlanBusy] = useState(false);
+  const [planMessage, setPlanMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
-  useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
+  const refreshMonetization = useCallback(() => callApi<any>('membership-status', {}, token).then(setMonetizationStatus).catch(() => undefined), [token]);
+  useEffect(() => { void refreshMonetization(); }, [refreshMonetization]);
   async function savePaymentKeys() {
     setBusy(true); setPaymentMessage('');
     try {
-      const payload = provider === 'razorpay' ? { provider, keyId, keySecret } : { provider, secretKey: keySecret };
-      await callApi('connect-payment', payload, token);
-      setKeyId(''); setKeySecret('');
-      setPaymentStatus({ provider, connected_at: new Date().toISOString() });
-      setPaymentMessage('Your payment credentials are encrypted and stored on the server.');
-    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not save payment credentials.'); }
+      await callApi('connect-payment', { provider: 'razorpay', keyId, keySecret, webhookSecret, consentAccepted: billingConsent }, token);
+      setKeyId(''); setKeySecret(''); setWebhookSecret(''); setBillingConsent(false);
+      await refreshMonetization();
+      setPaymentMessage('Razorpay is connected. Finish the one-time webhook setup before accepting live subscriptions.');
+    } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not connect Razorpay.'); }
     finally { setBusy(false); }
+  }
+  async function createMembershipPlan() {
+    setPlanBusy(true); setPlanMessage('');
+    try {
+      await callApi('membership-plan-create', {
+        name: planName, description: planDescription, amountRupees: Number(planPrice), period: planPeriod,
+        interval: 1, features: planFeatures.split('\n').map(value => value.trim()).filter(Boolean).slice(0, 8),
+      }, token);
+      setPlanName(''); setPlanDescription(''); setPlanPrice('99');
+      setPlanFeatures('Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A');
+      await refreshMonetization(); setPlanMessage('Your Razorpay membership plan is ready.');
+    } catch (error) { setPlanMessage(error instanceof Error ? error.message : 'Could not create membership plan.'); }
+    finally { setPlanBusy(false); }
+  }
+  async function toggleMembershipPlan(plan: any) {
+    try {
+      await callApi('membership-plan-toggle', { planId: plan.id, isActive: !plan.is_active }, token);
+      await refreshMonetization();
+    } catch (error) { setPlanMessage(error instanceof Error ? error.message : 'Could not update membership plan.'); }
   }
   async function addTrack() {
     if (!audioFile || !title.trim() || !rights) return setMessage('Choose an audio file, add a title and confirm the rights.');
@@ -1908,7 +1935,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         <button className={activeSection === 'notifications' ? 'active' : ''} onClick={() => setActiveSection('notifications')}><Bell /> Notifications</button>
         <button className={activeSection === 'privacy' ? 'active' : ''} onClick={() => setActiveSection('privacy')}><ShieldCheck /> Privacy</button>
         <button className={activeSection === 'creator' ? 'active' : ''} onClick={() => setActiveSection('creator')}><Music2 /> Creator tools</button>
-        <button className={activeSection === 'payments' ? 'active' : ''} onClick={() => setActiveSection('payments')}><Crown /> Payments</button>
+        <button className={activeSection === 'monetization' ? 'active' : ''} onClick={() => setActiveSection('monetization')}><Crown /> Monetization</button>
         <button className={activeSection === 'app' ? 'active' : ''} onClick={() => setActiveSection('app')}><Settings /> App settings</button>
         <button className={activeSection === 'about' ? 'active' : ''} onClick={() => setActiveSection('about')}><Activity /> About VYRA</button>
       </nav>
@@ -1929,18 +1956,51 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>)}
-        {activeSection === 'payments' && (<div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
-      {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
-      <div className="settings-form">
-        <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
-        {provider === 'razorpay' && <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>}
-        <label>{provider === 'razorpay' ? 'RAZORPAY KEY SECRET' : 'STRIPE SECRET KEY'}<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder={provider === 'razorpay' ? 'Your Razorpay secret' : 'sk_test_… or sk_live_…'} autoComplete="new-password" /></label>
-        <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keySecret || (provider === 'razorpay' && !keyId)}>{busy ? 'Encrypting securely…' : 'Save payment credentials'}</button>
-        {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
-      </div>
-      <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
-    </div>)}
-        {activeSection === 'app' && <>
+        {activeSection === 'monetization' && <div className="settings-card monetization-settings-card">
+          <div className="settings-card-head"><Crown /><div><h3>Monetize your channel</h3><p>Unlock paid channel memberships, private videos and recurring creator income.</p></div></div>
+          <div className="monetization-progress">
+            <div className="monetization-progress-copy"><span>FOLLOWER MILESTONE</span><b>{(monetizationStatus?.followerCount ?? user.follower_count).toLocaleString('en-IN')} / 20,000</b></div>
+            <div className="monetization-progress-track"><i style={{ width: Math.min(100, ((monetizationStatus?.followerCount ?? user.follower_count) / 20000) * 100) + '%' }} /></div>
+            <p>{monetizationStatus?.unlocked ? 'Your creator monetization tools are unlocked.' : 'Reach 20,000 followers to unlock paid channel subscriptions and member-only videos.'}</p>
+          </div>
+          {!monetizationStatus?.unlocked && <div className="monetization-locked"><Lock size={22} /><div><b>Creator monetization is locked</b><p>You need 20,000 real followers. VYRA checks your follower count on the server before connecting payments, creating plans or publishing private videos.</p></div></div>}
+          {monetizationStatus?.unlocked && !monetizationStatus?.connection && <div className="monetization-connect-flow">
+            <div className="monetization-step"><span>01</span><div><b>Connect your Razorpay merchant account</b><p>Use API credentials generated in your own Razorpay Dashboard. Start with a test key pair before switching to live mode.</p></div></div>
+            <div className="settings-form">
+              <label>RAZORPAY KEY ID<input value={keyId} onChange={e => setKeyId(e.target.value)} placeholder="rzp_test_…" autoComplete="off" /></label>
+              <label>RAZORPAY KEY SECRET<input type="password" value={keySecret} onChange={e => setKeySecret(e.target.value)} placeholder="Paste your Razorpay Key Secret" autoComplete="new-password" /></label>
+              <label>RAZORPAY WEBHOOK SECRET<input type="password" value={webhookSecret} onChange={e => setWebhookSecret(e.target.value)} placeholder="Create a unique webhook secret in Razorpay" autoComplete="new-password" /></label>
+              <div className="billing-consent">
+                <label className="check-line"><input type="checkbox" checked={billingConsent} onChange={e => setBillingConsent(e.target.checked)} /> I allow VYRA to store my Razorpay API credentials in encrypted form and use them to create and manage recurring subscriptions on my behalf.</label>
+                <p>Subscription charges are processed by Razorpay in my own merchant account and settlements go directly to that account. VYRA does not receive or hold my subscription funds.</p>
+              </div>
+              <button className="button button-primary button-wide" onClick={savePaymentKeys} disabled={busy || !keyId.trim() || !keySecret || !webhookSecret || !billingConsent}>{busy ? 'Validating and encrypting…' : 'I agree — connect Razorpay securely'}</button>
+              {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
+            </div>
+            <p className="payment-note"><ShieldCheck /><span>VYRA validates your key pair with Razorpay, encrypts your Key ID, Key Secret and webhook secret with AES-GCM, and never sends those secrets back to your device or stores them in your public profile.</span></p>
+          </div>}
+          {monetizationStatus?.connection && <>
+            <div className="monetization-connected"><CheckCircle2 size={20} /><div><b>Razorpay connected · {monetizationStatus.connection.keyMode === 'live' ? 'Live mode' : 'Test mode'}</b><small>Connected {monetizationStatus.connection.connectedAt ? new Date(monetizationStatus.connection.connectedAt).toLocaleDateString() : 'successfully'} · {monetizationStatus.activeSubscribers || 0} active member(s)</small></div><span className="badge-muted">Encrypted</span></div>
+            <div className="webhook-setup-card"><b>One-time webhook setup</b><p>In Razorpay Dashboard → Account & Settings → Webhooks, add this URL and enter the same webhook secret used above.</p><code>{monetizationStatus.webhookUrl}</code><small>Subscribe to: subscription.activated, subscription.charged, subscription.halted, subscription.cancelled, subscription.completed, subscription.paused, subscription.resumed</small></div>
+            <div className="monetization-step"><span>02</span><div><b>Create a membership plan</b><p>Choose a price and tell supporters exactly what their membership includes.</p></div></div>
+            <div className="settings-form plan-create-form">
+              <label>PLAN NAME<input value={planName} onChange={e => setPlanName(e.target.value)} maxLength={60} placeholder="VYRA Inner Circle" /></label>
+              <label>DESCRIPTION<input value={planDescription} onChange={e => setPlanDescription(e.target.value)} maxLength={240} placeholder="A closer look behind the scenes" /></label>
+              <div className="plan-price-row"><label>PRICE (INR)<input type="number" min="1" max="1000000" step="0.01" value={planPrice} onChange={e => setPlanPrice(e.target.value)} placeholder="99" /></label><label>BILLING CYCLE<select value={planPeriod} onChange={e => setPlanPeriod(e.target.value as 'monthly' | 'yearly')}><option value="monthly">Every month</option><option value="yearly">Every year</option></select></label></div>
+              <label>MEMBER BENEFITS <small>One benefit per line, up to 8</small><textarea rows={4} value={planFeatures} onChange={e => setPlanFeatures(e.target.value)} maxLength={650} placeholder={'Exclusive member-only videos\nBehind-the-scenes posts\nMembers-only Q&A'} /></label>
+              <button className="button button-primary" onClick={createMembershipPlan} disabled={planBusy || !planName.trim() || Number(planPrice) < 1 || !planFeatures.trim()}>{planBusy ? 'Creating in Razorpay…' : 'Create membership plan'} <Plus size={15} /></button>
+              {planMessage && <p className="microcopy">{planMessage}</p>}
+            </div>
+            <div className="membership-plan-list"><div className="settings-card-head"><Crown /><div><h3>Your membership plans</h3><p>Pause a plan to stop new members joining. Existing active memberships are not silently cancelled.</p></div></div>
+              {(monetizationStatus.plans || []).length ? monetizationStatus.plans.map((plan: any) => <article className="membership-plan-row" key={plan.id}>
+                <div><b>{plan.name}</b><small>₹{(plan.amount_paise / 100).toLocaleString('en-IN')} / {plan.period === 'yearly' ? 'year' : 'month'} · {(Array.isArray(plan.features) ? plan.features : []).length} benefits</small></div>
+                <span className={plan.is_active ? 'plan-active-pill' : 'plan-paused-pill'}>{plan.is_active ? 'Active' : 'Paused'}</span>
+                <button className="button button-soft" onClick={() => void toggleMembershipPlan(plan)}>{plan.is_active ? 'Pause' : 'Activate'}</button>
+              </article>) : <p className="microcopy">Your first plan will appear here after you create it.</p>}
+            </div>
+          </>}
+          <p className="member-plan-footnote">Creators remain responsible for their Razorpay merchant account, KYC, applicable taxes, refunds and subscription terms. VYRA creates and manages subscriptions in the connected creator account.</p>
+        </div>}        {activeSection === 'app' && <>
           <div className="settings-card"><div className="settings-card-head"><Settings /><div><h3>App preferences</h3><p>Personalize playback and appearance.</p></div></div>
             <div className="settings-shortcut-row"><div><b>Video sound</b><small>Control audio across VYRA videos.</small></div><button className={'settings-toggle ' + (soundEnabled ? 'on' : '')} onClick={onToggleSound}>{soundEnabled ? 'Sound on' : 'Sound off'}</button></div>
             <div className="settings-shortcut-row"><div><b>Dark appearance</b><small>Switch between dark and light surfaces.</small></div><button className={'settings-toggle ' + (darkTheme ? 'on' : '')} onClick={onToggleTheme}>{darkTheme ? 'Dark on' : 'Light on'}</button></div>
