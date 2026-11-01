@@ -313,9 +313,9 @@ Deno.serve(async (req: Request) => {
       const current = requireUser();
       const postId = String(body.postId || "");
       if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid video to save.", 422, origin);
-      const { data: post, error: postError } = await db.from("posts").select("id,status").eq("id", postId).maybeSingle();
+      const { data: post, error: postError } = await db.from("posts").select("id,status,media_type").eq("id", postId).maybeSingle();
       if (postError) throw postError;
-      if (!post || post.status !== "approved") return fail("This video is no longer available.", 404, origin);
+      if (!post || post.status !== "approved" || post.media_type !== "video") return fail("Only approved videos can be saved.", 404, origin);
       const { data: existing, error: lookupError } = await db.from("saved_posts").select("post_id")
         .eq("user_id", current.profile.id).eq("post_id", postId).maybeSingle();
       if (lookupError) throw lookupError;
