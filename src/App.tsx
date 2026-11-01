@@ -1177,11 +1177,143 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
 }
 
 
+type GroupChat = {
+  id: string; name: string; description: string; created_by: string; member_count: number;
+  role: 'admin' | 'member'; last_message_at: string; last_message: { content: string; sender_id: string; created_at: string } | null;
+};
+type GroupMessage = { id: string; group_id: string; sender_id: string; content: string; created_at: string; author?: User | null };
+
+function GroupChats({ token, user, onToast }: { token: string; user: User; onToast: (message: string) => void }) {
+  const [groups, setGroups] = useState<GroupChat[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<GroupMessage[]>([]);
+  const [composer, setComposer] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [groupName, setGroupName] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
+  const [memberHandles, setMemberHandles] = useState('');
+  const [newHandles, setNewHandles] = useState('');
+  const [showAddMembers, setShowAddMembers] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState('');
+  const messageEndRef = useRef<HTMLDivElement | null>(null);
+  const selected = groups.find(group => group.id === selectedId) || null;
+  const loadGroups = useCallback(async () => {
+    const result = await callApi<{ groups: GroupChat[] }>('dm-group-list', {}, token);
+    setGroups(result.groups || []);
+    setSelectedId(current => current || result.groups?.[0]?.id || null);
+  }, [token]);
+  useEffect(() => {
+    loadGroups().catch(error => setMessage(error instanceof Error ? error.message : 'Could not load groups.'))
+      .finally(() => setLoading(false));
+    const timer = window.setInterval(() => loadGroups().catch(() => undefined), 5000);
+    return () => window.clearInterval(timer);
+  }, [loadGroups]);
+  useEffect(() => {
+    if (!selectedId) { setMessages([]); return; }
+    let active = true;
+    const loadMessages = async () => {
+      const result = await callApi<{ messages: GroupMessage[] }>('dm-group-messages', { groupId: selectedId }, token);
+      if (active) setMessages(result.messages || []);
+    };
+    void loadMessages().catch(error => { if (active) setMessage(error instanceof Error ? error.message : 'Could not load group messages.'); });
+    const timer = window.setInterval(() => void loadMessages().catch(() => undefined), 3000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selectedId, token]);
+  useEffect(() => { messageEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages.length, selectedId]);
+  async function createGroup(event: FormEvent) {
+    event.preventDefault();
+    if (!groupName.trim() || busy) return;
+    setBusy(true); setMessage('');
+    try {
+      const result = await callApi<{ group: { id: string } }>('dm-group-create', {
+        name: groupName.trim(), description: groupDescription.trim(),
+        memberUsernames: memberHandles.split(/[ ,]+/).map(handle => handle.replace(/^@/, '')).filter(Boolean),
+      }, token);
+      setGroupName(''); setGroupDescription(''); setMemberHandles(''); setCreating(false);
+      await loadGroups(); setSelectedId(result.group.id); onToast('Your VYRA group is ready.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not create group.'); }
+    finally { setBusy(false); }
+  }
+  async function sendGroupMessage(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !composer.trim() || busy) return;
+    const content = composer.trim(); setComposer(''); setBusy(true);
+    try {
+      await callApi('dm-group-send', { groupId: selected.id, content }, token);
+      const result = await callApi<{ messages: GroupMessage[] }>('dm-group-messages', { groupId: selected.id }, token);
+      setMessages(result.messages || []); await loadGroups();
+    } catch (error) { setComposer(content); onToast(error instanceof Error ? error.message : 'Message could not be sent.'); }
+    finally { setBusy(false); }
+  }
+  async function addMembers(event: FormEvent) {
+    event.preventDefault();
+    if (!selected || !newHandles.trim() || busy) return;
+    setBusy(true); setMessage('');
+    try {
+      const result = await callApi<{ added: number }>('dm-group-add', {
+        groupId: selected.id, memberUsernames: newHandles.split(/[ ,]+/).map(handle => handle.replace(/^@/, '')).filter(Boolean),
+      }, token);
+      setNewHandles(''); setShowAddMembers(false); await loadGroups();
+      onToast(result.added + ' member(s) added.');
+    } catch (error) { setMessage(error instanceof Error ? error.message : 'Could not add group members.'); }
+    finally { setBusy(false); }
+  }
+  async function renameGroup() {
+    if (!selected || selected.role !== 'admin') return;
+    const name = window.prompt('New group name', selected.name);
+    if (!name?.trim()) return;
+    try {
+      await callApi('dm-group-rename', { groupId: selected.id, name: name.trim() }, token);
+      await loadGroups();
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not rename group.'); }
+  }
+  async function leaveGroup() {
+    if (!selected || !window.confirm('Leave "' + selected.name + '"?')) return;
+    try {
+      await callApi('dm-group-leave', { groupId: selected.id }, token);
+      setSelectedId(null); setMessages([]); await loadGroups(); onToast('You left the group.');
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not leave group.'); }
+  }
+  return <div className="dm-group-workspace">
+    <aside className="dm-group-sidebar">
+      <div className="dm-inbox-head"><div><b>Your groups</b><small>{groups.length} group chats</small></div><button className="icon-button" title="Create group" onClick={() => setCreating(true)}><Plus size={18} /></button></div>
+      {loading && <p className="dm-empty-note">Loading groups…</p>}
+      {groups.map(group => <button key={group.id} className={'dm-group-list-item ' + (selectedId === group.id ? 'active' : '')} onClick={() => setSelectedId(group.id)}>
+        <span className="dm-group-avatar"><Users size={18} /></span><span><b>{group.name}</b><small>{group.last_message?.content || group.member_count + ' members'}</small></span><i>{group.member_count}</i>
+      </button>)}
+      {!loading && groups.length === 0 && <div className="dm-group-empty"><Users size={26} /><b>Your people, together.</b><p>Create a group and bring your community into one chat.</p><button className="button button-primary" onClick={() => setCreating(true)}>Create your first group</button></div>}
+    </aside>
+    <section className="dm-group-thread">
+      {selected ? <>
+        <header className="dm-group-thread-head"><span className="dm-group-avatar large"><Users size={19} /></span><div><b>{selected.name}</b><small>{selected.member_count} members · Group conversation</small></div><div className="dm-group-actions">{selected.role === 'admin' && <button className="icon-button" title="Rename group" onClick={() => void renameGroup()}><Pencil size={16} /></button>}{selected.role === 'admin' && <button className="icon-button" title="Add people" onClick={() => setShowAddMembers(value => !value)}><UserPlus size={17} /></button>}<button className="icon-button" title="Leave group" onClick={() => void leaveGroup()}><LogOut size={16} /></button></div></header>
+        {showAddMembers && <form className="dm-group-add-form" onSubmit={addMembers}><input value={newHandles} onChange={e => setNewHandles(e.target.value)} placeholder="@username, @anotherperson" /><button className="button button-primary" disabled={busy || !newHandles.trim()}>Add people</button></form>}
+        {message && <p className="microcopy">{message}</p>}
+        <div className="dm-group-messages">{messages.map(item => <div key={item.id} className={'dm-group-message ' + (item.sender_id === user.id ? 'mine' : '')}>
+          {item.sender_id !== user.id && <small>@{item.author?.username || 'creator'}</small>}
+          <div>{item.content}</div><time>{new Date(item.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
+        </div>)}<div ref={messageEndRef} /></div>
+        <form className="dm-group-compose" onSubmit={sendGroupMessage}><textarea rows={1} value={composer} onChange={e => setComposer(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); e.currentTarget.form?.requestSubmit(); } }} maxLength={2000} placeholder={'Message ' + selected.name + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={17} /></button></form>
+      </> : <div className="dm-no-selection"><Users size={34} /><h3>Make a group memory.</h3><p>Select a group or create a new one to chat with everyone together.</p></div>}
+    </section>
+    {creating && <div className="dm-group-create-backdrop"><form className="dm-group-create-card" onSubmit={createGroup}>
+      <div className="modal-top"><div><p className="eyebrow">YOUR COMMUNITY</p><h3>Create a group</h3></div><button type="button" className="icon-button" onClick={() => setCreating(false)}><X /></button></div>
+      <label>GROUP NAME<input value={groupName} onChange={e => setGroupName(e.target.value)} maxLength={60} placeholder="The creator crew" required minLength={2} /></label>
+      <label>DESCRIPTION<input value={groupDescription} onChange={e => setGroupDescription(e.target.value)} maxLength={180} placeholder="What brings this group together?" /></label>
+      <label>ADD PEOPLE <small>Optional · separate usernames with commas</small><input value={memberHandles} onChange={e => setMemberHandles(e.target.value)} placeholder="@creator_one, @creator_two" /></label>
+      {message && <p className="form-error">{message}</p>}
+      <button className="button button-primary button-wide" disabled={busy || groupName.trim().length < 2}>{busy ? 'Creating group…' : 'Create group'} <Users size={16} /></button>
+    </form></div>}
+  </div>;
+}
+
 function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCall }: {
   token: string; user: User; target: User | null; onClearTarget: () => void;
   onToast: (message: string) => void; onStartCall: (call: any) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
+  const [messageMode, setMessageMode] = useState<'direct' | 'groups'>('direct');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [inboxSearch, setInboxSearch] = useState('');
   const [syncStatus, setSyncStatus] = useState<'syncing' | 'live' | 'reconnecting'>('syncing');
@@ -1496,6 +1628,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
 
   return <section className="content-page dm-page">
     <div className="page-intro dm-page-intro"><p className="eyebrow">STAY IN THE LOOP</p><h2>Your messages.</h2><p>Chat with creators, share photos and send voice notes.</p></div>
+    <div className="dm-mode-switcher"><button className={messageMode === 'direct' ? 'active' : ''} onClick={() => setMessageMode('direct')}><MessageCircle size={16} /> Direct</button><button className={messageMode === 'groups' ? 'active' : ''} onClick={() => setMessageMode('groups')}><Users size={16} /> Groups</button></div>
+    {messageMode === 'direct' && <>
     {messages.some(message => message.e2ee_version === 1) && storedKey && !identity && <form className="legacy-restore-card" onSubmit={unlockLegacyMessages}>
       <div><b>Restore older messages</b><small>Only conversations from VYRA’s previous chat system need this. New chats work without it.</small></div>
       <label><span>VYRA password</span><input type="password" value={password} onChange={event => setPassword(event.target.value)} required minLength={10} autoComplete="current-password" /></label>
@@ -1558,6 +1692,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
         </> : <div className="dm-no-selection"><MessageCircle size={34} /><h3>Your conversations live here.</h3><p>Choose a message request or accepted chat, or visit a creator profile to send the first message.</p></div>}
       </section>
     </div>
+    </>}
+    {messageMode === 'groups' && <GroupChats token={token} user={user} onToast={onToast} />}
   </section>;
 }
 
