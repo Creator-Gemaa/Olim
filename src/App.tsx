@@ -1465,9 +1465,11 @@ function RightRail({ user, onCreate, onOpenProfile, onFollow, followingMap }: {
     <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 VYRA</p></div></aside>;
 }
 
-function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate }: {
+function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate, onOpenProfile, onOpenNotifications, soundEnabled, onToggleSound, darkTheme, onToggleTheme }: {
   token: string; user: User; onLogout: () => void; update: UpdateUiState;
   onCheckUpdates: () => void; onDownloadUpdate: () => void; onInstallUpdate: () => void;
+  onOpenProfile: () => void; onOpenNotifications: () => void;
+  soundEnabled: boolean; onToggleSound: () => void; darkTheme: boolean; onToggleTheme: () => void;
 }) {
   const [tracks, setTracks] = useState<any[]>([]);
   const [title, setTitle] = useState('');
@@ -1480,6 +1482,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
   const [paymentStatus, setPaymentStatus] = useState<any>(null);
+  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'payments' | 'app' | 'about'>('account');
   const [paymentMessage, setPaymentMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
   useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
@@ -1504,24 +1507,36 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Could not add audio.'); }
     finally { setBusy(false); }
   }
-  return <div className="content-page settings-page"><div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings & creator tools.</h2><p>Manage your identity, audio library and account session.</p></div>
-    <div className="settings-card update-settings-card"><div className="settings-card-head"><RefreshCw /><div><h3>VYRA updates</h3><p>Find the newest release for this device whenever you check.</p></div></div>
-      <div className="update-status-row" aria-live="polite"><span className={'update-state-dot update-state-' + update.phase} /><div className="update-status-copy"><b>Installed version v{APP_VERSION}</b><p>{update.message}</p>{update.latestVersion && <small>Latest published version v{update.latestVersion}</small>}</div></div>
-      {update.phase === 'downloading' && update.progress !== undefined && <div className="update-progress" aria-label={'Download progress ' + Math.round(update.progress) + '%'}><span style={{ width: Math.max(0, Math.min(100, update.progress)) + '%' }} /></div>}
-      <div className="update-actions"><button className="button button-primary" onClick={onCheckUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}><RefreshCw size={15} /> {update.phase === 'checking' ? 'Checking…' : 'Update'}</button>
-        {update.phase === 'available' && !window.vyraDesktop && <button className="button button-soft" onClick={onDownloadUpdate}>{Capacitor.getPlatform() === 'android' ? 'Download APK' : 'Open release downloads'}</button>}
-        {update.phase === 'ready' && window.vyraDesktop && <button className="button button-primary" onClick={onInstallUpdate}>Restart & install</button>}
-      </div>
-      <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Because preview APKs are debug-signed, Android may require removing the previous preview build before installing a new one.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
-    </div>
-    <div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
+  return <div className="content-page settings-page">
+    <div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings.</h2><p>Choose a section to manage your VYRA experience.</p></div>
+    <div className="settings-hub">
+      <nav className="settings-section-nav" aria-label="Settings sections">
+        <button className={activeSection === 'account' ? 'active' : ''} onClick={() => setActiveSection('account')}><UserRound /> Account</button>
+        <button className={activeSection === 'notifications' ? 'active' : ''} onClick={() => setActiveSection('notifications')}><Bell /> Notifications</button>
+        <button className={activeSection === 'privacy' ? 'active' : ''} onClick={() => setActiveSection('privacy')}><ShieldCheck /> Privacy</button>
+        <button className={activeSection === 'creator' ? 'active' : ''} onClick={() => setActiveSection('creator')}><Music2 /> Creator tools</button>
+        <button className={activeSection === 'payments' ? 'active' : ''} onClick={() => setActiveSection('payments')}><Crown /> Payments</button>
+        <button className={activeSection === 'app' ? 'active' : ''} onClick={() => setActiveSection('app')}><Settings /> App settings</button>
+        <button className={activeSection === 'about' ? 'active' : ''} onClick={() => setActiveSection('about')}><Activity /> About VYRA</button>
+      </nav>
+      <div className="settings-section-panel">
+        {activeSection === 'account' && <>
+          <div className="settings-card"><div className="settings-card-head"><Avatar user={user} size="lg" /><div><h3>@{user.username}</h3><p>{user.display_name || 'Your VYRA creator account'}</p></div></div>
+            <div className="settings-shortcut-row"><div><b>Profile</b><small>Edit your public details and creator identity.</small></div><button className="button button-soft" onClick={onOpenProfile}>Open profile</button></div>
+            <div className="settings-shortcut-row"><div><b>Sign-in account</b><small>You are signed in as @{user.username}.</small></div><span className="badge-muted">Active</span></div>
+          </div>
+          <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+        </>}
+        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place.</p></div></div><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button></div>}
+        {activeSection === 'privacy' && <div className="settings-card"><div className="settings-card-head"><ShieldCheck /><div><h3>Privacy & messages</h3><p>Understand how your content and conversations are handled.</p></div></div><div className="settings-privacy-copy"><b>Direct messages</b><p>New chats use standard VYRA message storage and are not end-to-end encrypted. Only start conversations with people you trust, and avoid sending passwords or highly sensitive information.</p><b>Older conversations</b><p>Messages created with the previous encrypted-chat system can still be restored on this device when you have their original saved key.</p><b>Message requests</b><p>New conversations begin as requests. The recipient must accept before the regular chat opens.</p></div></div>}
+        {activeSection === 'creator' && (<div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
       <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
         <label className="audio-file">AUDIO FILE<input type="file" accept="audio/mpeg,audio/mp4" onChange={e => setAudioFile(e.target.files?.[0] || null)} /></label><label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I have the rights required to upload and use this audio.</label>
         <button className="button button-primary" onClick={addTrack} disabled={busy}>{busy ? 'Adding…' : 'Add to library'}</button>{message && <p className="microcopy">{message}</p>}
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
-    </div>
-    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
+    </div>)}
+        {activeSection === 'payments' && (<div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
       {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
       <div className="settings-form">
         <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
@@ -1531,8 +1546,25 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
       </div>
       <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
+    </div>)}
+        {activeSection === 'app' && <>
+          <div className="settings-card"><div className="settings-card-head"><Settings /><div><h3>App preferences</h3><p>Personalize playback and appearance.</p></div></div>
+            <div className="settings-shortcut-row"><div><b>Video sound</b><small>Control audio across VYRA videos.</small></div><button className={'settings-toggle ' + (soundEnabled ? 'on' : '')} onClick={onToggleSound}>{soundEnabled ? 'Sound on' : 'Sound off'}</button></div>
+            <div className="settings-shortcut-row"><div><b>Dark appearance</b><small>Switch between dark and light surfaces.</small></div><button className={'settings-toggle ' + (darkTheme ? 'on' : '')} onClick={onToggleTheme}>{darkTheme ? 'Dark on' : 'Light on'}</button></div>
+          </div>
+          <div className="settings-card update-settings-card"><div className="settings-card-head"><RefreshCw /><div><h3>VYRA updates</h3><p>Find the newest release for this device whenever you check.</p></div></div>
+      <div className="update-status-row" aria-live="polite"><span className={'update-state-dot update-state-' + update.phase} /><div className="update-status-copy"><b>Installed version v{APP_VERSION}</b><p>{update.message}</p>{update.latestVersion && <small>Latest published version v{update.latestVersion}</small>}</div></div>
+      {update.phase === 'downloading' && update.progress !== undefined && <div className="update-progress" aria-label={'Download progress ' + Math.round(update.progress) + '%'}><span style={{ width: Math.max(0, Math.min(100, update.progress)) + '%' }} /></div>}
+      <div className="update-actions"><button className="button button-primary" onClick={onCheckUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}><RefreshCw size={15} /> {update.phase === 'checking' ? 'Checking…' : 'Update'}</button>
+        {update.phase === 'available' && !window.vyraDesktop && <button className="button button-soft" onClick={onDownloadUpdate}>{Capacitor.getPlatform() === 'android' ? 'Download APK' : 'Open release downloads'}</button>}
+        {update.phase === 'ready' && window.vyraDesktop && <button className="button button-primary" onClick={onInstallUpdate}>Restart & install</button>}
+      </div>
+      <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Because preview APKs are debug-signed, Android may require removing the previous preview build before installing a new one.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
     </div>
-    <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+        </>}
+        {activeSection === 'about' && <div className="settings-card"><div className="settings-card-head"><div className="settings-about-mark"><img src="./icon.svg" alt="" width="34" height="34" /></div><div><h3>VYRA</h3><p>Real fame. Real people.</p></div></div><div className="settings-shortcut-row"><div><b>App version</b><small>Currently installed version.</small></div><strong>v{APP_VERSION}</strong></div><p className="microcopy">Made for creators.</p></div>}
+      </div>
+    </div>
   </div>;
 }
 
@@ -1541,6 +1573,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [tab, setTab] = useState<Tab>('home');
   const [posts, setPosts] = useState<Post[]>([]);
   const [worldFeed, setWorldFeed] = useState<Post[]>([]);
+  const [savedPosts, setSavedPosts] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
   const [dmTarget, setDmTarget] = useState<User | null>(null);
   const [sharePost, setSharePost] = useState<Post | null>(null);
@@ -1558,6 +1591,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [updateState, setUpdateState] = useState<UpdateUiState>({ phase: 'idle', message: 'Tap Update to check for the newest VYRA release.' });
   const [mobileNav, setMobileNav] = useState(false);
   const pendingLikesRef = useRef(new Set<string>());
+  const pendingSavesRef = useRef(new Set<string>());
   const pendingFollowsRef = useRef(new Set<string>());
   const [followingMap, setFollowingMap] = useState<Record<string, boolean>>({});
   const [soundEnabled, setSoundEnabled] = useState(() => {
@@ -1666,6 +1700,14 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     };
   }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
+  useEffect(() => {
+    if (tab !== 'saved') return;
+    let active = true;
+    callApi<{ posts: Post[] }>('saved-posts', {}, token)
+      .then(result => { if (active) setSavedPosts(result.posts); })
+      .catch(error => { if (active) setToast(error instanceof Error ? error.message : 'Could not load saved videos.'); });
+    return () => { active = false; };
+  }, [tab, token]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   useEffect(() => {
     let active = true;
@@ -1707,6 +1749,33 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       setWorldFeed(items => rankWorldFeed(apply(items, wasLiked, -delta)));
       setToast(error instanceof Error ? error.message : 'Could not update appreciation.');
     } finally { pendingLikesRef.current.delete(post.id); }
+  }, [token]);
+  const savePost = useCallback(async (post: Post) => {
+    if (pendingSavesRef.current.has(post.id)) return;
+    pendingSavesRef.current.add(post.id);
+    const wasSaved = !!post.saved;
+    const optimistic = (items: Post[], saved: boolean) => items.map(item => item.id === post.id ? { ...item, saved } : item);
+    setPosts(items => optimistic(items, !wasSaved));
+    setWorldFeed(items => optimistic(items, !wasSaved));
+    setSavedPosts(items => !wasSaved
+      ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+      : items.filter(item => item.id !== post.id));
+    try {
+      const result = await callApi<{ saved: boolean }>('save-post', { postId: post.id }, token);
+      setPosts(items => optimistic(items, result.saved));
+      setWorldFeed(items => optimistic(items, result.saved));
+      setSavedPosts(items => result.saved
+        ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+        : items.filter(item => item.id !== post.id));
+      setToast(result.saved ? 'Video saved to your collection.' : 'Removed from saved videos.');
+    } catch (error) {
+      setPosts(items => optimistic(items, wasSaved));
+      setWorldFeed(items => optimistic(items, wasSaved));
+      setSavedPosts(items => wasSaved
+        ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+        : items.filter(item => item.id !== post.id));
+      setToast(error instanceof Error ? error.message : 'Could not update saved videos.');
+    } finally { pendingSavesRef.current.delete(post.id); }
   }, [token]);
   const comment = useCallback(async (post: Post, text: string) => {
     const content = text.trim();
@@ -1750,7 +1819,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       setWorldFeed(items => rankWorldFeed(items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p)));
     } catch { /* A view counter should never interrupt playback. */ }
   }, [token]);
-  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : posts, [posts, worldFeed, tab]);
+  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : tab === 'saved' ? savedPosts : posts, [posts, worldFeed, savedPosts, tab]);
   if (loading) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell" data-theme={darkTheme ? 'dark' : 'light'}><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
     <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
@@ -1762,22 +1831,28 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   </aside>
   {mobileNav && <button className="mobile-shade" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
   <main className="main-column"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileNav(!mobileNav)}><Menu /></button>
-    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'World Feed' : tab === 'messages' ? 'Messages' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
+    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'Videos' : tab === 'saved' ? 'Saved videos' : tab === 'messages' ? 'Messages' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
     <div className="topbar-actions">
       <button className="global-sound-toggle" type="button" onClick={toggleSound} aria-label={soundEnabled ? 'Mute all videos' : 'Unmute all videos'} title={soundEnabled ? 'Mute all videos' : 'Unmute all videos'}><span className="global-control-icon">{soundEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</span><span className="global-control-label">{soundEnabled ? 'Sound on' : 'Sound off'}</span></button>
       <button className={'theme-switch ' + (darkTheme ? 'is-dark' : 'is-light')} type="button" role="switch" aria-checked={darkTheme} aria-label={darkTheme ? 'Dark theme on. Switch to light theme.' : 'Dark theme off. Switch to dark theme.'} title={darkTheme ? 'Dark theme on' : 'Dark theme off'} onClick={() => setDarkTheme(value => !value)}><span className="theme-switch-icon">{darkTheme ? <Moon size={13} /> : <Sun size={13} />}</span><span className="theme-switch-track"><i /></span></button>
+      <button className="topbar-shortcut" type="button" title="Home" aria-label="Home" onClick={() => setTab('home')}><Home size={17} /></button>
+      <button className={'topbar-shortcut ' + (tab === 'saved' ? 'active' : '')} type="button" title="Saved videos" aria-label="Saved videos" onClick={() => setTab('saved')}><Bookmark size={17} /></button>
+      <button className={'topbar-shortcut ' + (tab === 'notifications' ? 'active' : '')} type="button" title="Notifications" aria-label="Notifications" onClick={() => setTab('notifications')}><Bell size={17} />{notifications.length > 0 && <i className="shortcut-dot" />}</button>
+      <button className={'topbar-shortcut ' + (tab === 'settings' ? 'active' : '')} type="button" title="Settings" aria-label="Settings" onClick={() => setTab('settings')}><Settings size={17} /></button>
+      {user.is_admin && <button className={'topbar-shortcut ' + (tab === 'admin' ? 'active' : '')} type="button" title="Admin" aria-label="Admin" onClick={() => setTab('admin')}><ShieldCheck size={17} /></button>}
       <div className="top-search"><Search size={16} /><input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Find creators" /><button onClick={runSearch}>Search</button></div><button className="create-small" onClick={() => setUploadOpen(true)}><Plus size={17} /> Create</button></div>
   </header>
   {searchResults.length > 0 && <div className="search-results">{searchResults.map(p => <button key={p.id} onClick={() => { setViewProfile(p); setTab('profile'); setSearchResults([]); }}><Avatar user={p} size="sm" /><b>@{p.username}</b>{p.is_verified && <VerifiedBadge />}<span>{p.follower_count.toLocaleString()} followers</span><small>Open profile ↗</small></button>)}</div>}
   {tab === 'home' && <div className="feed-layout"><div className="feed-column"><StoryRail stories={stories} me={user} onAdd={() => setUploadOpen(true)} onOpen={setStoryOpen} /><div className="feed-heading"><div><p className="eyebrow">A LITTLE INSPIRATION, DAILY</p><h2>Moments worth sharing.</h2></div><span>FEED / 01</span></div>
-    {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onComment={comment} onProfile={openProfile} onView={recordView} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
+    {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
   </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={openProfile} onFollow={follow} followingMap={followingMap} /></div>}
-  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} soundEnabled={soundEnabled} onLike={like} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
-  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
+  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} soundEnabled={soundEnabled} onLike={like} onSave={savePost} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
+  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
+  {tab === 'saved' && <div className="content-page saved-videos-page"><div className="page-intro"><p className="eyebrow">YOUR PRIVATE COLLECTION</p><h2>Saved videos.</h2><p>Keep the videos you want to come back to.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(post => <PostCard key={post.id} post={post} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Bookmark size={28} /><h3>Your collection is waiting.</h3><p>Tap Save on a video to keep it here.</p><button className="button button-primary" onClick={() => setTab('explore')}>Discover videos</button></div>}</div>}
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className={'button ' + ((followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'button-soft following-button' : 'button-primary')} onClick={() => follow(viewProfile)}>{(followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'Following' : 'Follow @' + viewProfile.username}</button></div>}</div>}
   {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onStartCall={setCallInfo} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
-  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} />}
+  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} onOpenProfile={() => { setViewProfile(null); setTab('profile'); }} onOpenNotifications={() => setTab('notifications')} soundEnabled={soundEnabled} onToggleSound={toggleSound} darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
   <footer className="app-footer"><span>VYRA © 2026</span><span>BUILT BY GEMAA ✦</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
