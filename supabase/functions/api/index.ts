@@ -456,7 +456,7 @@ Deno.serve(async (req: Request) => {
       const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
       const ids = rows.map((row: any) => row.id);
       const { data: recentMessages, error: recentError } = await db.from("dm_messages")
-        .select("conversation_id,content,sender_id,message_type,created_at")
+        .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
         .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
       if (recentError) throw recentError;
       const latestByConversation = new Map<string, any>();
