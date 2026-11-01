@@ -1,1 +1,1 @@
-{"name":"VYRA","short_name":"VYRA","description":"Make your mark.","start_url":"./","scope":"./","display":"standalone","background_color":"#0B1020","theme_color":"#0B1020","icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
+{"name":"VYRA","short_name":"VYRA","description":"A creator community published by Gemaa Limited.","start_url":"./","scope":"./","display":"standalone","background_color":"#0B1020","theme_color":"#0B1020","icons":[{"src":"./icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}]}
