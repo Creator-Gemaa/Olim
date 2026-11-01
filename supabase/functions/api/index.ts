@@ -68,6 +68,65 @@ async function encryptCredentials(value: string) {
   const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, cryptoKey, new TextEncoder().encode(value));
   return "v1." + b64(iv) + "." + b64(new Uint8Array(cipher));
 }
+
+async function decryptCredentials(value: string) {
+  const rawKey = Deno.env.get("PAYMENT_ENCRYPTION_KEY") || "";
+  if (!rawKey) throw new Error("Payment credential encryption is not configured.");
+  const keyBytes = fromB64(rawKey.trim());
+  if (keyBytes.length !== 32) throw new Error("PAYMENT_ENCRYPTION_KEY must decode to exactly 32 bytes.");
+  const [version, ivText, cipherText] = value.split(".");
+  if (version !== "v1" || !ivText || !cipherText) throw new Error("Saved payment credentials have an unsupported format.");
+  const key = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromB64(ivText) },
+    key,
+    fromB64(cipherText),
+  );
+  return JSON.parse(new TextDecoder().decode(plain)) as Record<string, string>;
+}
+function randomSecret(bytes = 32) {
+  return Array.from(crypto.getRandomValues(new Uint8Array(bytes)))
+    .map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+async function getFollowerCount(userId: string) {
+  const { count, error } = await db.from("follows")
+    .select("follower_id", { count: "exact", head: true }).eq("following_id", userId);
+  if (error) throw error;
+  return count || 0;
+}
+async function razorpayRequest(credentials: Record<string, string>, endpoint: string, payload?: Record<string, unknown>) {
+  const keyId = String(credentials.keyId || "");
+  const keySecret = String(credentials.keySecret || "");
+  if (!keyId || !keySecret) throw new Error("Connect your Razorpay account again before using monetization.");
+  const headers = {
+    "Authorization": "Basic " + btoa(keyId + ":" + keySecret),
+    "Content-Type": "application/json",
+  };
+  const result = await fetch("https://api.razorpay.com/v1/" + endpoint.replace(/^\//, ""), {
+    method: payload ? "POST" : "GET",
+    headers,
+    body: payload ? JSON.stringify(payload) : undefined,
+  });
+  const data = await result.json().catch(() => ({}));
+  if (!result.ok) {
+    const description = String(data?.error?.description || data?.error?.reason || "");
+    throw new Error(description || "Razorpay rejected the request. Check your API keys and subscription access.");
+  }
+  return data;
+}
+async function getMonetizationConnection(creatorId: string) {
+  const followerCount = await getFollowerCount(creatorId);
+  if (followerCount < 20000) throw new Error("Creator monetization unlocks at 20,000 followers. Your current count is " + followerCount.toLocaleString("en-IN") + ".");
+  const { data: connection, error } = await db.from("creator_payment_connections")
+    .select("provider,encrypted_credentials,billing_consent_at,billing_consent_version,connected_at")
+    .eq("creator_id", creatorId).maybeSingle();
+  if (error) throw error;
+  if (!connection || connection.provider !== "razorpay" || !connection.billing_consent_at) {
+    throw new Error("Connect Razorpay and explicitly accept the billing consent before creating paid memberships.");
+  }
+  return { followerCount, connection, credentials: await decryptCredentials(connection.encrypted_credentials) };
+}
+
 function randomToken() {
   const bytes = crypto.getRandomValues(new Uint8Array(32));
   return Array.from(bytes).map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -1046,16 +1105,37 @@ Deno.serve(async (req: Request) => {
             .eq("id", audioTrackId).eq("user_id", current.profile.id).maybeSingle();
           if (!ownedTrack) return fail("Choose an audio track from your own library.", 403, origin);
         }
+        const visibility = String(body.visibility || "public");
+        const membershipPlanId = String(body.membershipPlanId || "");
+        if (!["public","members_only"].includes(visibility)) return fail("Choose a valid post visibility.", 422, origin);
+        if (visibility === "members_only") {
+          if (family !== "video" || !/^[0-9a-f-]{36}$/i.test(membershipPlanId)) {
+            return fail("Members-only publishing requires a video and an active membership plan.", 422, origin);
+          }
+          const followerCount = await getFollowerCount(current.profile.id);
+          if (followerCount < 20000) return fail("Members-only videos unlock at 20,000 followers.", 403, origin);
+          const [{ data: plan }, { data: connection }] = await Promise.all([
+            db.from("membership_plans").select("id").eq("id", membershipPlanId)
+              .eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
+            db.from("creator_payment_connections").select("provider,billing_consent_at")
+              .eq("creator_id", current.profile.id).maybeSingle(),
+          ]);
+          if (!plan || connection?.provider !== "razorpay" || !connection?.billing_consent_at) {
+            return fail("Connect Razorpay and create an active membership plan before publishing a members-only video.", 403, origin);
+          }
+        } else if (membershipPlanId) {
+          return fail("A public post cannot be linked to a membership plan.", 422, origin);
+        }
         const { data, error } = await db.from("posts").insert({
           user_id: current.profile.id,
           title: String(body.title || "").trim().slice(0, 160),
           caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
-          sha256: hash,
+          sha256: hash, visibility, membership_plan_id: visibility === "members_only" ? membershipPlanId : null,
           status: family === "video" ? "approved" : "pending",
           copyright_status: family === "video" ? "not_scanned" : "pending_manual_review",
           is_world_featured: family === "video",
-        }).select("id,kind,status").single();
+        }).select("id,kind,status,visibility,membership_plan_id").single();
         if (error) throw error;
         if (adminCurated) {
           await audit(current.profile.id, "import_rights_cleared_video", data.id, {
@@ -1067,39 +1147,158 @@ Deno.serve(async (req: Request) => {
       }
       return fail("Unknown upload purpose.", 422, origin);
     }
+    if (action === "monetization-status") {
+      const current = requireUser();
+      const followerCount = await getFollowerCount(current.profile.id);
+      const eligible = followerCount >= 20000;
+      const [{ data: connection, error: connectionError }, { data: plans, error: plansError }] = await Promise.all([
+        db.from("creator_payment_connections")
+          .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
+          .eq("creator_id", current.profile.id).maybeSingle(),
+        db.from("membership_plans")
+          .select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
+          .eq("creator_id", current.profile.id).order("created_at", { ascending: false }).limit(20),
+      ]);
+      if (connectionError) throw connectionError;
+      if (plansError) throw plansError;
+      return response({
+        followerCount, threshold: 20000, eligible,
+        connection: connection || null, plans: plans || [],
+      }, 200, origin);
+    }
     if (action === "connect-payment") {
       const current = requireUser();
-      if (!current.profile.is_verified) return fail("Only verified creators can connect a payment provider.", 403, origin);
-      const provider = String(body.provider || "");
-      if (!["razorpay", "stripe"].includes(provider)) return fail("Choose Razorpay or Stripe.", 422, origin);
-      let credentials: Record<string, string>;
-      if (provider === "stripe") {
-        const secretKey = String(body.secretKey || "").trim();
-        if (!/^sk_(test|live)_[A-Za-z0-9_]{12,}$/.test(secretKey)) return fail("Enter a valid Stripe secret key (test or live).", 422, origin);
-        credentials = { secretKey };
-      } else {
-        const keyId = String(body.keyId || "").trim();
-        const keySecret = String(body.keySecret || "").trim();
-        if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
-          return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
-        }
-        credentials = { keyId, keySecret };
+      const provider = String(body.provider || "razorpay");
+      if (provider !== "razorpay") return fail("VYRA channel subscriptions currently support Razorpay only.", 422, origin);
+      const followerCount = await getFollowerCount(current.profile.id);
+      if (followerCount < 20000) return fail("Creator monetization unlocks at 20,000 followers. Current followers: " + followerCount.toLocaleString("en-IN") + ".", 403, origin);
+      if (body.billingConsent !== true || String(body.billingConsentVersion || "") !== "vyra-razorpay-consent-v1") {
+        return fail("Explicitly accept the Razorpay credential-storage and subscription-billing consent before continuing.", 422, origin);
       }
+      const keyId = String(body.keyId || "").trim();
+      const keySecret = String(body.keySecret || "").trim();
+      if (!/^rzp_(test|live)_[A-Za-z0-9]{8,}$/.test(keyId) || keySecret.length < 16 || keySecret.length > 256) {
+        return fail("Enter a valid Razorpay Key ID and Key Secret.", 422, origin);
+      }
+      const credentials = { keyId, keySecret, webhookSecret: randomSecret(32) };
+      // Verify the supplied credentials with Razorpay before saving them.
+      await razorpayRequest(credentials, "plans?count=1");
       const encrypted = await encryptCredentials(JSON.stringify(credentials));
+      const consentAt = new Date().toISOString();
       const { error } = await db.from("creator_payment_connections").upsert({
-        creator_id: current.profile.id, provider, encrypted_credentials: encrypted,
-        connected_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        creator_id: current.profile.id, provider: "razorpay", encrypted_credentials: encrypted,
+        billing_consent_at: consentAt, billing_consent_version: "vyra-razorpay-consent-v1",
+        connected_at: consentAt, updated_at: consentAt,
       }, { onConflict: "creator_id" });
       if (error) throw error;
-      await audit(current.profile.id, "connect_creator_payment_provider", current.profile.id, { provider });
-      return response({ ok: true, provider }, 200, origin);
+      const webhookUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator_id=" + current.profile.id;
+      await audit(current.profile.id, "connect_creator_razorpay", current.profile.id, {
+        provider: "razorpay", followerCount, billingConsentVersion: "vyra-razorpay-consent-v1",
+      });
+      // Show this per-creator webhook secret once. It is stored only inside the encrypted credentials blob.
+      return response({ ok: true, provider: "razorpay", connectedAt: consentAt, webhookUrl, webhookSecret: credentials.webhookSecret }, 200, origin);
     }
     if (action === "payment-status") {
       const current = requireUser();
       const { data, error } = await db.from("creator_payment_connections")
-        .select("provider,connected_at,updated_at").eq("creator_id", current.profile.id).maybeSingle();
+        .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
+        .eq("creator_id", current.profile.id).maybeSingle();
       if (error) throw error;
       return response({ connection: data || null }, 200, origin);
+    }
+    if (action === "membership-plan-create") {
+      const current = requireUser();
+      const { followerCount, credentials } = await getMonetizationConnection(current.profile.id);
+      const name = String(body.name || "").trim().slice(0, 60);
+      const description = String(body.description || "").trim().slice(0, 240);
+      const amount = Number(body.amountRupees);
+      const period = String(body.period || "monthly");
+      const interval = Number(body.interval || 1);
+      const features = Array.isArray(body.features)
+        ? body.features.map((item: unknown) => String(item).trim().slice(0, 100)).filter(Boolean).slice(0, 8)
+        : [];
+      if (name.length < 2 || !Number.isFinite(amount) || amount < 1 || amount > 1000000
+        || !["monthly","yearly"].includes(period) || !Number.isInteger(interval) || interval < 1 || interval > 12) {
+        return fail("Enter a plan name, a price of ₹1–₹10,00,000, and a valid monthly or yearly billing interval.", 422, origin);
+      }
+      const amountPaise = Math.round(amount * 100);
+      const razorpayPlan = await razorpayRequest(credentials, "plans", {
+        period, interval,
+        item: { name, description: description || name, amount: amountPaise, currency: "INR" },
+        notes: { vyra_creator_id: current.profile.id, vyra_product: "channel_membership" },
+      });
+      if (!razorpayPlan?.id) throw new Error("Razorpay did not return a plan ID.");
+      const { data: plan, error } = await db.from("membership_plans").insert({
+        creator_id: current.profile.id, name, description, features, amount_paise: amountPaise,
+        currency: "INR", period, interval, razorpay_plan_id: razorpayPlan.id,
+      }).select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at").single();
+      if (error) throw error;
+      await audit(current.profile.id, "create_membership_plan", plan.id, { amountPaise, period, interval, followerCount });
+      return response({ plan }, 201, origin);
+    }
+    if (action === "membership-plans") {
+      const current = requireUser();
+      const creatorId = String(body.creatorId || "");
+      const username = String(body.username || "").trim().toLowerCase();
+      let resolvedId = creatorId;
+      if (!resolvedId && username) {
+        const { data: creator, error } = await db.from("profiles").select("id").eq("username", username).maybeSingle();
+        if (error) throw error;
+        resolvedId = creator?.id || "";
+      }
+      if (!/^[0-9a-f-]{36}$/i.test(resolvedId)) return fail("Creator not found.", 404, origin);
+      const { data: plans, error } = await db.from("membership_plans")
+        .select("id,creator_id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
+        .eq("creator_id", resolvedId).eq("is_active", true).order("amount_paise", { ascending: true });
+      if (error) throw error;
+      const { data: activeRows, error: activeError } = await db.from("subscriptions")
+        .select("membership_plan_id,status,current_end_at").eq("subscriber_id", current.profile.id)
+        .eq("creator_id", resolvedId).eq("status", "active");
+      if (activeError) throw activeError;
+      const now = Date.now();
+      const activeIds = new Set((activeRows || []).filter((row: any) =>
+        !row.current_end_at || new Date(row.current_end_at).getTime() > now
+      ).map((row: any) => row.membership_plan_id));
+      return response({ plans: (plans || []).map((plan: any) => ({
+        ...plan, is_member: activeIds.has(plan.id), is_owner: resolvedId === current.profile.id,
+      })) }, 200, origin);
+    }
+    if (action === "membership-subscribe") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(planId)) return fail("Choose a valid membership plan.", 422, origin);
+      const { data: plan, error: planError } = await db.from("membership_plans")
+        .select("id,creator_id,name,amount_paise,period,interval,razorpay_plan_id,is_active")
+        .eq("id", planId).eq("is_active", true).maybeSingle();
+      if (planError) throw planError;
+      if (!plan || plan.creator_id === current.profile.id) return fail("This membership plan is unavailable.", 404, origin);
+      const { credentials } = await getMonetizationConnection(plan.creator_id);
+      const { data: existing, error: existingError } = await db.from("subscriptions")
+        .select("id,status,current_end_at").eq("creator_id", plan.creator_id)
+        .eq("subscriber_id", current.profile.id).eq("membership_plan_id", plan.id)
+        .in("status", ["created","authenticated","active","pending","halted"]).maybeSingle();
+      if (existingError) throw existingError;
+      if (existing && existing.status === "active" && (!existing.current_end_at || new Date(existing.current_end_at).getTime() > Date.now())) {
+        return fail("You already have an active membership for this plan.", 409, origin);
+      }
+      const totalCount = plan.period === "monthly" ? 120 : 10;
+      const razorpaySub = await razorpayRequest(credentials, "subscriptions", {
+        plan_id: plan.razorpay_plan_id, total_count: totalCount, quantity: plan.interval,
+        customer_notify: true,
+        notes: {
+          vyra_creator_id: plan.creator_id, vyra_subscriber_id: current.profile.id,
+          vyra_membership_plan_id: plan.id,
+        },
+      });
+      if (!razorpaySub?.id || !razorpaySub?.short_url) throw new Error("Razorpay did not return a hosted subscription checkout link.");
+      const { data: subscription, error } = await db.from("subscriptions").upsert({
+        creator_id: plan.creator_id, subscriber_id: current.profile.id, provider: "razorpay",
+        provider_subscription_id: razorpaySub.id, membership_plan_id: plan.id,
+        status: String(razorpaySub.status || "created"), updated_at: new Date().toISOString(),
+      }, { onConflict: "provider_subscription_id" })
+        .select("id,provider_subscription_id,status,membership_plan_id").single();
+      if (error) throw error;
+      return response({ subscription, checkoutUrl: razorpaySub.short_url }, 201, origin);
     }
     if (action === "list-audio") {
       const current = requireUser();
