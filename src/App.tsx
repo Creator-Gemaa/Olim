@@ -2328,7 +2328,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     try { localStorage.setItem('vyra-mobile-permissions-seen:' + user.id, 'true'); } catch { /* Local storage may be unavailable. */ }
     setPermissionsOpen(false);
   }} />}
-  {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
+  {uploadOpen && <UploadModal token={token} user={user} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <VYRAPlayer src={storyOpen.media_url} soundEnabled={soundEnabled} onToggleSound={toggleSound} autoPlay className="story-video-player" /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
