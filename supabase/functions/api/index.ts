@@ -173,32 +173,55 @@ async function auth(req: Request) {
   if (!profile) return null;
   return { tokenHash, session, profile };
 }
-function publicMedia(path: string | null) {
-  return path ? db.storage.from("media").getPublicUrl(path).data.publicUrl : null;
+function publicMedia(path: string | null, bucket = "media") {
+  return path ? db.storage.from(bucket).getPublicUrl(path).data.publicUrl : null;
 }
+async function signedMemberMedia(path: string, bucket = "member-media") {
+  const { data, error } = await db.storage.from(bucket).createSignedUrl(path, 60 * 60);
+  if (error || !data?.signedUrl) throw error || new Error("Could not create a private media access link.");
+  return data.signedUrl;
+}
+
 async function enrichPosts(rows: any[], viewerId: string) {
   if (!rows?.length) return [];
   const ids = rows.map((row) => row.id);
   const authorIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
-  const [likesResult, followsResult, savedResult] = await Promise.all([
+  const membershipPlanIds = [...new Set(rows.filter((row) => row.visibility === "members_only" && row.membership_plan_id).map((row) => row.membership_plan_id))];
+  const [likesResult, followsResult, savedResult, subscriptionsResult] = await Promise.all([
     db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids),
-    authorIds.length
-      ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds)
-      : Promise.resolve({ data: [], error: null }),
+    authorIds.length ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds) : Promise.resolve({ data: [], error: null }),
     db.from("saved_posts").select("post_id").eq("user_id", viewerId).in("post_id", ids),
+    membershipPlanIds.length ? db.from("subscriptions").select("membership_plan_id,current_end_at").eq("subscriber_id", viewerId).eq("status", "active").in("membership_plan_id", membershipPlanIds) : Promise.resolve({ data: [], error: null }),
   ]);
   if (likesResult.error) throw likesResult.error;
   if (followsResult.error) throw followsResult.error;
   if (savedResult.error) throw savedResult.error;
+  if (subscriptionsResult.error) throw subscriptionsResult.error;
   const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
   const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
   const saved = new Set((savedResult.data || []).map((item: any) => item.post_id));
-  return rows.map((row) => ({
-    id: row.id, title: row.title || "", caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
-    kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
-    comments_count: row.comments_count || 0, views_count: row.views_count || 0,
-    created_at: row.created_at, is_world_featured: !!row.is_world_featured,
-    liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+  const memberPlans = new Set((subscriptionsResult.data || []).filter((item: any) =>
+    !item.current_end_at || new Date(item.current_end_at).getTime() > Date.now()
+  ).map((item: any) => item.membership_plan_id));
+  return await Promise.all(rows.map(async (row) => {
+    const isMembersOnly = row.visibility === "members_only";
+    const isOwner = row.user_id === viewerId;
+    const isMember = !!row.membership_plan_id && memberPlans.has(row.membership_plan_id);
+    const isLocked = isMembersOnly && !isOwner && !isMember;
+    let mediaUrl: string | null = null;
+    if (!isLocked) mediaUrl = row.media_bucket === "member-media"
+      ? await signedMemberMedia(row.media_path, "member-media")
+      : publicMedia(row.media_path, "media");
+    return {
+      id: row.id, title: row.title || "", caption: row.caption, media_url: mediaUrl,
+      media_type: row.media_type, kind: row.kind, duration_seconds: Number(row.duration_seconds || 0),
+      likes_count: row.likes_count || 0, comments_count: row.comments_count || 0,
+      views_count: row.views_count || 0, created_at: row.created_at,
+      is_world_featured: !!row.is_world_featured, visibility: row.visibility || "public",
+      membership_plan_id: row.membership_plan_id || null, is_locked: isLocked,
+      liked: liked.has(row.id), saved: saved.has(row.id),
+      author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+    };
   }));
 }
 
@@ -232,14 +255,15 @@ async function exactCopyrightMatch(hash: string) {
   const { data } = await db.from("copyright_fingerprints").select("id,rights_holder,source_label").eq("sha256", hash).maybeSingle();
   return data || null;
 }
-async function storageFileExists(path: string) {
+async function storageFileExists(path: string, bucket = "media") {
   const parts = path.split("/");
   const folder = parts.slice(0, -1).join("/");
   const leaf = parts[parts.length - 1];
-  const { data, error } = await db.storage.from("media").list(folder, { search: leaf, limit: 10 });
+  const { data, error } = await db.storage.from(bucket).list(folder, { search: leaf, limit: 10 });
   if (error) return false;
   return (data || []).some((item: any) => item.name === leaf);
 }
+
 function mimeFamily(type: string) {
   if (type.startsWith("image/")) return "image";
   if (type.startsWith("video/")) return "video";
@@ -444,14 +468,14 @@ Deno.serve(async (req: Request) => {
       const postId = String(body.postId || "");
       if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid post to delete.", 422, origin);
       const { data: post, error: lookupError } = await db.from("posts")
-        .select("id,media_path,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
+        .select("id,media_path,media_bucket,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
       if (lookupError) throw lookupError;
       if (!post) return fail("This post was not found on your creator account.", 404, origin);
       const { data: deleted, error: deleteError } = await db.from("posts").delete()
         .eq("id", postId).eq("user_id", current.profile.id).select("id").maybeSingle();
       if (deleteError) throw deleteError;
       if (!deleted) return fail("The post could not be deleted. Refresh and try again.", 409, origin);
-      const { error: storageError } = await db.storage.from("media").remove([post.media_path]);
+      const { error: storageError } = await db.storage.from(post.media_bucket || "media").remove([post.media_path]);
       return response({ ok: true, storageCleanupPending: !!storageError }, 200, origin);
     }
     if (action === "search-users" || action === "suggestions") {
@@ -1230,11 +1254,24 @@ Deno.serve(async (req: Request) => {
       if (purpose === "audio" && family !== "audio") return fail("Choose an MP3 or M4A audio file.", 422, origin);
       const match = await exactCopyrightMatch(hash);
       if (match) return response({ blocked: true, reason: "exact_copyright_hash_match" }, 200, origin);
+      const visibility = purpose === "post" ? String(body.visibility || "public") : "public";
+      let bucketName = "media";
+      if (visibility === "members_only") {
+        const planId = String(body.membershipPlanId || "");
+        if (purpose !== "post" || family !== "video" || !/^[0-9a-f-]{36}$/i.test(planId)) return fail("Members-only uploads require a video and a valid membership plan.", 422, origin);
+        if ((await getFollowerCount(current.profile.id)) < 20000) return fail("Creator monetization unlocks at 20,000 followers.", 403, origin);
+        const [{ data: plan }, { data: connection }] = await Promise.all([
+          db.from("membership_plans").select("id").eq("id", planId).eq("creator_id", current.profile.id).eq("is_active", true).maybeSingle(),
+          db.from("creator_payment_connections").select("provider,billing_consent_at").eq("creator_id", current.profile.id).maybeSingle(),
+        ]);
+        if (!plan || connection?.provider !== "razorpay" || !connection?.billing_consent_at) return fail("Connect Razorpay and select one of your active membership plans.", 403, origin);
+        bucketName = "member-media";
+      } else if (visibility !== "public") return fail("Choose a valid post visibility.", 422, origin);
       const extension = name.includes(".") ? name.split(".").pop() : "bin";
       const path = current.profile.id + "/" + crypto.randomUUID() + "." + extension;
-      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      const { data, error } = await db.storage.from(bucketName).createSignedUploadUrl(path, { upsert: false });
       if (error || !data?.token) throw error || new Error("Could not create a signed upload.");
-      return response({ path, uploadToken: data.token }, 200, origin);
+      return response({ path, uploadToken: data.token, bucketName }, 200, origin);
     }
     if (action === "complete-upload") {
       const current = requireUser();
@@ -1243,6 +1280,8 @@ Deno.serve(async (req: Request) => {
       const hash = String(body.sha256 || "").toLowerCase();
       const mime = String(body.mimeType || "");
       const family = mimeFamily(mime);
+      const bucketName = String(body.bucketName || "media");
+      if (!["media","member-media"].includes(bucketName)) return fail("Invalid media destination.", 422, origin);
       const adminCurated = body.adminCurated === true;
       let curatedSourceUrl = "";
       let curatedRightsHolder = "";
@@ -1266,21 +1305,23 @@ Deno.serve(async (req: Request) => {
         return fail("Confirm that you own this video or have permission to publish it.", 422, origin);
       }
       if (!path.startsWith(current.profile.id + "/") || !/^[a-f0-9]{64}$/.test(hash)) return fail("Invalid upload reference.", 422, origin);
-      if (!(await storageFileExists(path))) return fail("Upload was not found in media storage.", 422, origin);
-      const { data: uploadedBlob, error: downloadError } = await db.storage.from("media").download(path);
+      if (purpose === "post" && String(body.visibility || "public") === "members_only" && bucketName !== "member-media") return fail("Members-only videos must be uploaded to private storage.", 422, origin);
+      if (bucketName === "member-media" && (purpose !== "post" || family !== "video" || String(body.visibility || "") !== "members_only")) return fail("Private storage is reserved for members-only videos.", 422, origin);
+      if (!(await storageFileExists(path, bucketName))) return fail("Upload was not found in media storage.", 422, origin);
+      const { data: uploadedBlob, error: downloadError } = await db.storage.from(bucketName).download(path);
       if (downloadError || !uploadedBlob) return fail("Uploaded media could not be verified.", 422, origin);
       if (uploadedBlob.size !== Number(body.size || 0) || (uploadedBlob.type && uploadedBlob.type !== mime)) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("Uploaded file metadata did not match the upload request.", 422, origin);
       }
       const verifiedHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", await uploadedBlob.arrayBuffer())));
       if (verifiedHash !== hash) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("The uploaded file fingerprint did not match its actual bytes.", 422, origin);
       }
       const match = await exactCopyrightMatch(verifiedHash);
       if (match) {
-        await db.storage.from("media").remove([path]);
+        await db.storage.from(bucketName).remove([path]);
         return fail("This exact file is registered as copyrighted and has been blocked.", 451, origin);
       }
       if (purpose === "avatar") {
@@ -1304,7 +1345,7 @@ Deno.serve(async (req: Request) => {
         if (family !== "image" && family !== "video") return fail("Story must be a photo or video.", 422, origin);
         const { data, error } = await db.from("stories").insert({
           user_id: current.profile.id, media_path: path, media_type: family,
-          caption: String(body.caption || "").slice(0, 500), sha256: hash, status: "pending",
+          caption: String(body.caption || "").slice(0, 500), sha256: hash, media_bucket: bucketName, status: "pending",
           copyright_status: "pending_manual_review",
         }).select("id").single();
         if (error) throw error;
