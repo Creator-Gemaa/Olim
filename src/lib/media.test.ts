@@ -1,11 +1,25 @@
 import { describe, expect, it } from 'vitest';
-import { acceptedMediaType, classifyVideo, generateVideoCopy, maxBytesFor } from './media';
+import { acceptedMediaType, classifyVideo, generateVideoCopy, isReelVideo, maxBytesFor } from './media';
 
 describe('video categorization', () => {
   it('keeps a two-minute video in Reels', () => expect(classifyVideo(120)).toBe('reel'));
   it('moves longer videos to Videos', () => expect(classifyVideo(120.01)).toBe('video'));
   it('rejects invalid duration', () => expect(() => classifyVideo(Number.NaN)).toThrow());
 });
+describe('stored video Reel detection', () => {
+  it('includes videos already marked as Reels', () => {
+    expect(isReelVideo({ media_type: 'video', kind: 'reel', duration_seconds: 180 })).toBe(true);
+  });
+  it('recovers short videos whose stored kind is mislabeled', () => {
+    expect(isReelVideo({ media_type: 'video', kind: 'video', duration_seconds: 90 })).toBe(true);
+    expect(isReelVideo({ media_type: 'video', kind: 'video', duration_seconds: '120' })).toBe(true);
+  });
+  it('keeps long videos and photos out of Reels', () => {
+    expect(isReelVideo({ media_type: 'video', kind: 'video', duration_seconds: 121 })).toBe(false);
+    expect(isReelVideo({ media_type: 'image', kind: 'reel', duration_seconds: 30 })).toBe(false);
+  });
+});
+
 describe('media validation', () => {
   it('accepts supported video and image types only', () => {
     expect(acceptedMediaType('video/mp4')).toBe(true);
