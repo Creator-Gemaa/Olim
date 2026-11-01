@@ -1003,3 +1003,21 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
   .topbar-shortcut{width:29px;height:29px;flex-basis:29px}
   .top-search,.create-small{width:30px;min-width:30px;flex-basis:30px;height:30px}
 }
+
+
+/* Mobile onboarding permission sheet */
+.mobile-permissions-backdrop{z-index:120}
+.mobile-permissions-card{width:min(480px,100%);padding:27px;background:#17141f;border:1px solid #8b68df66;border-radius:22px;box-shadow:0 28px 90px #0009;color:#f8f5ff}
+.mobile-permissions-icon{width:48px;height:48px;display:grid;place-items:center;border-radius:15px;background:linear-gradient(135deg,#7c4dff,#d64dc4);box-shadow:0 12px 32px #8b5cf644;margin-bottom:17px}
+.mobile-permissions-card>.eyebrow{margin:0 0 9px}
+.mobile-permissions-card h2{font:800 25px/1.2 Manrope,sans-serif;letter-spacing:-.8px;margin:0 0 10px}
+.mobile-permissions-copy{font-size:13px;line-height:1.7;color:#b9b2c8;margin:0 0 19px}
+.mobile-permission-row{display:flex;align-items:center;gap:12px;padding:13px 0;border-top:1px solid #ffffff13}
+.mobile-permission-symbol{width:38px;height:38px;flex:0 0 38px;border-radius:12px;display:grid;place-items:center;background:#8b5cf622;color:#c7aaff}
+.mobile-permission-row>span:nth-child(2){min-width:0;flex:1;display:grid;gap:4px}
+.mobile-permission-row b{font-size:13px}
+.mobile-permission-row small{font-size:10px;color:#a8a1b5;line-height:1.45}
+.mobile-permission-row .button{padding:9px 13px;font-size:11px}
+.mobile-permissions-card .microcopy{font-size:10px;line-height:1.6;color:#9f98ae;margin:17px 0}
+.settings-actions{display:flex;flex-wrap:wrap;gap:9px;margin-top:15px}
+@media(max-width:520px){.mobile-permissions-card{padding:22px 18px;border-radius:18px}.mobile-permissions-card h2{font-size:22px}.mobile-permission-row{gap:9px}.settings-actions{flex-direction:column;align-items:stretch}}
