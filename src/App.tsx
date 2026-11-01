@@ -1247,7 +1247,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
       {keyError && <div className="form-error">{keyError}</div>}
       <button className="button button-soft" disabled={busy || keyLoading}>{busy ? 'Restoring…' : 'Restore history'}</button>
     </form>}
-    {messages.some(message => message.e2ee_version === 1) && !storedKey && !keyLoading && <div className="legacy-restore-note">Some older messages need the private key used when they were sent. This account has no saved legacy key, so those specific messages cannot be decoded. New messages are unaffected.</div>}
+    {messages.some(message => message.e2ee_version === 1) && legacyKeyChecked && !storedKey && !keyLoading && <div className="legacy-restore-note">Some older messages need the private key used when they were sent. This account has no saved legacy key, so those specific messages cannot be decoded. New messages are unaffected.</div>}
     <div className="dm-layout">
       <aside className="dm-inbox">
         <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => setSyncStatus('reconnecting'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
