@@ -854,3 +854,26 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 @media(prefers-reduced-motion:reduce){
  .spin,.dm-bubble-row,.profile-tile-delete{animation:none!important;transition:none!important}
 }
+
+
+/* Creator chat actions and call recovery */
+.dm-bubble{position:relative}
+.dm-bubble-tools{display:flex;justify-content:flex-end;gap:5px;min-height:22px;margin-top:3px;opacity:.72}
+.dm-bubble-tools button{width:25px;height:23px;display:grid;place-items:center;border:1px solid #ffffff20;border-radius:7px;background:#0002;color:#d7d7d7;cursor:pointer}
+.dm-bubble-tools button:hover:not(:disabled){background:#ffffff18;color:#fff}
+.dm-bubble-tools button:disabled{opacity:.45;cursor:wait}
+.call-retry{min-height:38px;padding:0 14px;border:1px solid #ffffff35;border-radius:22px;background:#ffffff12;color:#fff;font-size:11px;font-weight:700}
+.call-retry:hover{background:#ffffff24}
+@media(max-width:760px){
+  .dm-messages{max-height:none;min-height:240px;padding:14px 11px;scroll-behavior:smooth}
+  .dm-bubble{max-width:88%;padding:10px 12px}
+  .dm-compose-inline{position:sticky;bottom:0;z-index:2;gap:5px;padding:9px;background:#080808f5;backdrop-filter:blur(12px)}
+  .dm-compose-inline textarea{max-height:116px;min-height:42px;font-size:13px}
+  .call-overlay{padding:8px}
+  .call-window{width:100%;min-height:0;max-height:96dvh;border-radius:16px}
+  .call-media-stage{min-height:48dvh}
+  .call-local-video{width:104px;height:78px;right:9px;top:9px}
+  .call-control-bar{flex-wrap:wrap;gap:10px;padding:12px 9px}
+  .call-control-bar>span{position:static;flex-basis:100%;text-align:center}
+  .call-network-note{line-height:1.5;padding:8px 12px}
+}

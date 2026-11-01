@@ -52,9 +52,9 @@ Press `Ctrl+Q` while signed in to the Owner account. Only Owner can verify creat
 
 ## Creator controls, calling and payments
 - Creators can remove their own uploaded videos from their creator wall. The API checks ownership before deleting the database record and stored media.
-- Direct messages support client-side end-to-end encryption, photo and voice attachments, inbox search, connection status and keyboard sending.
-- Audio/video calls use WebRTC and Google STUN by default. For restrictive mobile/carrier networks, configure a Coturn-compatible REST-auth TURN service with Supabase Edge Function secrets `TURN_URLS` (comma-separated `turn:`/`turns:` URLs) and `TURN_SHARED_SECRET`. VYRA issues short-lived, per-user TURN credentials. Without TURN, some networks may still block peer-to-peer calls.
-- Each verified creator must provide their own Razorpay Key ID and Key Secret in Settings. VYRA does not issue or share payment keys; credentials are encrypted server-side.
+- Direct messages support client-side end-to-end encryption, photo and voice attachments, inbox search, connection status, keyboard sending, copying decrypted text and sender-only message unsend.
+- Audio/video calls use WebRTC, Google STUN and optional Coturn-compatible REST-auth TURN. The call setup lifecycle is reset safely during React StrictMode effect cleanup, and failed calls can be retried from the call UI. For restrictive mobile/carrier networks, configure a TURN service with Supabase Edge Function secrets `TURN_URLS` (comma-separated `turn:`/`turns:` URLs) and `TURN_SHARED_SECRET`. VYRA issues short-lived, per-user TURN credentials. TURN hosting and valid credentials are still required on networks that block direct peer-to-peer traffic.
+- Each verified creator must provide their own Razorpay Key ID and Key Secret in Settings from their own Razorpay account. VYRA does not issue, provide or share payment keys; credentials are encrypted server-side.
 - Razorpay key storage is not live recurring billing. Checkout, verified payment webhooks, cancellations, refunds and subscription lifecycle handling still need implementation before creators can charge members.
 
 ## Feature boundaries
