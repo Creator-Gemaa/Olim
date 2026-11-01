@@ -6,7 +6,7 @@ import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus, Trash2,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
-  Share2, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
+  Share2, Copy, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
   Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
@@ -563,6 +563,8 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   const [micOn, setMicOn] = useState(true);
   const [cameraOn, setCameraOn] = useState(call.call_type === 'video');
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [connectionAttempt, setConnectionAttempt] = useState(0);
+  const [turnConfigured, setTurnConfigured] = useState<boolean | null>(null);
   const isCaller = call.caller_id === user.id;
 
   const sendSignal = useCallback(async (signalType: 'offer' | 'answer' | 'ice', payload: any) => {
@@ -613,10 +615,15 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
         let iceServers: RTCIceServer[] = [
           { urls: ['stun:stun.l.google.com:19302'] },
         ];
+        setTurnConfigured(null);
         try {
-          const iceConfig = await callApi<{ iceServers?: RTCIceServer[] }>('dm-call-ice-config', {}, token);
+          const iceConfig = await callApi<{ iceServers?: RTCIceServer[]; turnConfigured?: boolean }>('dm-call-ice-config', {}, token);
           if (iceConfig.iceServers?.length) iceServers = iceConfig.iceServers;
-        } catch { /* Public STUN remains available when TURN is not configured. */ }
+          setTurnConfigured(iceConfig.turnConfigured === true);
+        } catch {
+          setTurnConfigured(false);
+          // Public STUN is a fallback only; some carrier and corporate networks require TURN.
+        }
         const pc = new RTCPeerConnection({ iceServers });
         peerRef.current = pc;
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
@@ -634,7 +641,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           }
         };
         pc.onicecandidate = event => {
-          if (event.candidate) sendSignal('ice', event.candidate.toJSON()).catch(() => undefined);
+          if (event.candidate) sendSignal('ice', event.candidate.toJSON()).catch(() => setPhase('Call signaling interrupted. Check your connection and retry.'));
         };
         pc.onconnectionstatechange = () => {
           if (pc.connectionState === 'connected') setPhase('Connected');
@@ -667,9 +674,12 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     })();
     return () => {
       disposed = true;
+      // React StrictMode re-runs effects in development. Reset the guard so
+      // the second setup can initialize the media and peer connection.
+      startedRef.current = false;
       cleanup();
     };
-  }, [call.id, shouldConnect, call.call_type, isCaller, sendSignal, cleanup, onToast]);
+  }, [call.id, shouldConnect, call.call_type, isCaller, sendSignal, cleanup, onToast, connectionAttempt]);
 
   useEffect(() => {
     let active = true;
@@ -731,6 +741,16 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     setCameraOn(next);
   }
 
+  function retryConnection() {
+    cleanup();
+    startedRef.current = false;
+    processedRef.current = 0;
+    pendingIceRef.current = [];
+    setRemoteStream(null);
+    setPhase('Retrying connection…');
+    setConnectionAttempt(value => value + 1);
+  }
+
   const incoming = !isCaller && callStatus === 'ringing';
   return <div className="call-overlay">
     <div className="call-window">
@@ -742,11 +762,16 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           <video ref={localVideoRef} autoPlay muted playsInline data-vyra-mute-lock="true" className="call-local-video" />
           {!remoteStream && <div className="call-connecting"><div className="call-avatar"><Avatar user={{username:'',display_name:'VYRA'}} size="xl" /></div><b>{phase}</b><small>Waiting for the other creator…</small></div>}
         </div>}
-        <p className="call-network-note">Direct peer-to-peer WebRTC. Some restricted networks may need a TURN relay for calls to connect.</p>
+        <p className="call-network-note">{turnConfigured === true
+          ? 'TURN relay is ready. Keep VYRA open while the call connects.'
+          : turnConfigured === false
+            ? 'Basic STUN is active. Some mobile networks block direct calls; configure TURN_URLS and TURN_SHARED_SECRET in Supabase for relay support.'
+            : 'Preparing secure call networking…'}</p>
       {!incoming && <div className="call-control-bar">
         <span>{phase}</span>
         <button className={!micOn ? 'off' : ''} onClick={toggleMic} aria-label="Toggle microphone">{micOn ? <Mic /> : <MicOff />}</button>
         {call.call_type === 'video' && <button className={!cameraOn ? 'off' : ''} onClick={toggleCamera} aria-label="Toggle camera">{cameraOn ? <Camera /> : <CameraOff />}</button>}
+        {/(could not connect|network blocked|network interrupted|signaling interrupted)/i.test(phase) && <button className="call-retry" type="button" onClick={retryConnection}>Retry</button>}
         <button className="call-hangup" onClick={() => endCall('end')} aria-label="End call"><PhoneOff /></button>
       </div>}
     </div>
@@ -908,6 +933,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const [safetyCode, setSafetyCode] = useState('');
   const [showSafetyCode, setShowSafetyCode] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
+  const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
   const photoInputRef = useRef<HTMLInputElement | null>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
@@ -1167,6 +1193,37 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     finally { setBusy(false); }
   }
 
+  async function copyMessage(message: DMMessage) {
+    const plainText = decoded[message.id];
+    if (!plainText || message.message_type !== 'text') return;
+    try {
+      await navigator.clipboard.writeText(plainText);
+      onToast('Message copied.');
+    } catch {
+      onToast('Copy is unavailable in this browser. Select the message text to copy it.');
+    }
+  }
+
+  async function deleteMessage(message: DMMessage) {
+    if (message.sender_id !== user.id || deletingMessageId) return;
+    if (!window.confirm('Unsend this message for everyone in this chat?')) return;
+    setDeletingMessageId(message.id);
+    try {
+      const result = await callApi<{ ok: boolean; storageCleanupPending?: boolean }>(
+        'dm-delete-message', { messageId: message.id }, token,
+      );
+      setMessages(current => current.filter(item => item.id !== message.id));
+      await loadInbox();
+      onToast(result.storageCleanupPending
+        ? 'Message removed. Encrypted attachment cleanup is pending.'
+        : 'Message removed for everyone.');
+    } catch (error) {
+      onToast(error instanceof Error ? error.message : 'Could not remove this message.');
+    } finally {
+      setDeletingMessageId(null);
+    }
+  }
+
   async function sendAttachment(file: Blob, messageType: 'image' | 'voice', mime: string) {
     if (!selected || selected.status !== 'accepted' || !identity) throw new Error('Unlock secure messages and select an accepted chat first.');
     if (file.size > 15 * 1024 * 1024) throw new Error('Attachments must be 15 MB or smaller.');
@@ -1299,6 +1356,10 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
                 {message.message_type === 'voice' && attachmentUrls[message.id] && <audio className="dm-voice-player" controls src={attachmentUrls[message.id]} />}
                 {message.e2ee_version === 1 && !decoded[message.id] ? <p className="dm-decrypting">Decrypting…</p> : <p>{decoded[message.id] || (message.e2ee_version === 1 ? '🔒 Unlock secure messaging to read this.' : message.content)}</p>}
                 <small>{ago(message.created_at)} {message.e2ee_version === 1 && <LockKeyhole size={10} />}</small>
+                <div className="dm-bubble-tools">
+                  {message.message_type === 'text' && decoded[message.id] && <button type="button" title="Copy message" aria-label="Copy message" onClick={() => void copyMessage(message)}><Copy size={13} /></button>}
+                  {message.sender_id === user.id && <button type="button" title="Unsend message" aria-label="Unsend message" disabled={deletingMessageId === message.id || !!deletingMessageId} onClick={() => void deleteMessage(message)}>{deletingMessageId === message.id ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}</button>}
+                </div>
               </div>
             </div>)}
           </div>

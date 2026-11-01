@@ -694,6 +694,38 @@ Deno.serve(async (req: Request) => {
       return response({ message: { ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null } }, 201, origin);
     }
 
+    if (action === "dm-delete-message") {
+      const current = requireUser();
+      const messageId = String(body.messageId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(messageId)) return fail("Choose a valid message to remove.", 422, origin);
+      const { data: message, error: messageError } = await db.from("dm_messages")
+        .select("id,conversation_id,sender_id,attachment_path")
+        .eq("id", messageId).eq("sender_id", current.profile.id).maybeSingle();
+      if (messageError) throw messageError;
+      if (!message) return fail("Only your own messages can be removed.", 404, origin);
+      const { data: conversation, error: conversationError } = await db.from("dm_conversations")
+        .select("id,user_a,user_b").eq("id", message.conversation_id).maybeSingle();
+      if (conversationError) throw conversationError;
+      if (!conversation || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) {
+        return fail("Conversation not found.", 404, origin);
+      }
+      const { data: deleted, error: deleteError } = await db.from("dm_messages").delete()
+        .eq("id", messageId).eq("sender_id", current.profile.id).select("id").maybeSingle();
+      if (deleteError) throw deleteError;
+      if (!deleted) return fail("Message could not be removed. Refresh and try again.", 409, origin);
+      let storageCleanupPending = false;
+      if (message.attachment_path) {
+        const allowedPrefix = current.profile.id + "/dm/" + message.conversation_id + "/";
+        if (!message.attachment_path.startsWith(allowedPrefix)) {
+          storageCleanupPending = true;
+        } else {
+          const { error: storageError } = await db.storage.from("media").remove([message.attachment_path]);
+          storageCleanupPending = !!storageError;
+        }
+      }
+      return response({ ok: true, storageCleanupPending }, 200, origin);
+    }
+
     if (action === "dm-share-post") {
       const current = requireUser();
       const conversationId = String(body.conversationId || "");
