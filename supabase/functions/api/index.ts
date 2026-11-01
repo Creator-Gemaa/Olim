@@ -1350,7 +1350,7 @@ Deno.serve(async (req: Request) => {
         if (family !== "image" && family !== "video") return fail("Story must be a photo or video.", 422, origin);
         const { data, error } = await db.from("stories").insert({
           user_id: current.profile.id, media_path: path, media_type: family,
-          caption: String(body.caption || "").slice(0, 500), sha256: hash, media_bucket: bucketName, status: "pending",
+          caption: String(body.caption || "").slice(0, 500), sha256: hash, status: "pending",
           copyright_status: "pending_manual_review",
         }).select("id").single();
         if (error) throw error;
@@ -1393,7 +1393,7 @@ Deno.serve(async (req: Request) => {
           title: String(body.title || "").trim().slice(0, 160),
           caption: String(body.caption || "").slice(0, 2200), media_path: path,
           media_type: family, kind, duration_seconds: duration, audio_track_id: audioTrackId || null,
-          sha256: hash, visibility, membership_plan_id: visibility === "members_only" ? membershipPlanId : null,
+          sha256: hash, media_bucket: bucketName, visibility, membership_plan_id: visibility === "members_only" ? membershipPlanId : null,
           status: family === "video" ? "approved" : "pending",
           copyright_status: family === "video" ? "not_scanned" : "pending_manual_review",
           is_world_featured: family === "video",
