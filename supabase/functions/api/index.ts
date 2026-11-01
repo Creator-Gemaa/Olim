@@ -1486,9 +1486,9 @@ Deno.serve(async (req: Request) => {
       const features = Array.isArray(body.features)
         ? body.features.map((item: any) => String(item).trim().slice(0, 80)).filter(Boolean).slice(0, 8)
         : [];
-      if (name.length < 2 || !Number.isInteger(amountPaise) || amountPaise < 100 || amountPaise > 100000000
+      if (name.length < 2 || !Number.isInteger(amountPaise) || amountPaise <= 100 || amountPaise > 100000000
         || !["monthly","yearly"].includes(period) || !Number.isInteger(interval) || interval < 1 || interval > 12) {
-        return fail("Enter a plan name, a price of at least ₹1, and a valid monthly or yearly billing cycle.", 422, origin);
+        return fail("Enter a plan name, a price of at least ₹1.01, and a valid monthly or yearly billing cycle.", 422, origin);
       }
       if (!features.length) return fail("Add at least one member benefit so subscribers know what they receive.", 422, origin);
       const razorpayPlan = await razorpayApi(connection.credentials, "/plans", "POST", {
