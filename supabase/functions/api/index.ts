@@ -300,6 +300,21 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       return response({ posts: await enrichPosts(rows || [], current.profile.id) }, 200, origin);
     }
+    if (action === "delete-own-post") {
+      const current = requireUser();
+      const postId = String(body.postId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid post to delete.", 422, origin);
+      const { data: post, error: lookupError } = await db.from("posts")
+        .select("id,media_path,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!post) return fail("This post was not found on your creator account.", 404, origin);
+      const { data: deleted, error: deleteError } = await db.from("posts").delete()
+        .eq("id", postId).eq("user_id", current.profile.id).select("id").maybeSingle();
+      if (deleteError) throw deleteError;
+      if (!deleted) return fail("The post could not be deleted. Refresh and try again.", 409, origin);
+      const { error: storageError } = await db.storage.from("media").remove([post.media_path]);
+      return response({ ok: true, storageCleanupPending: !!storageError }, 200, origin);
+    }
     if (action === "search-users" || action === "suggestions") {
       const current = requireUser();
       let query = db.from("profiles").select("*").neq("id", current.profile.id).order("follower_count", { ascending: false }).limit(8);
@@ -699,6 +714,20 @@ Deno.serve(async (req: Request) => {
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
       await db.from("notifications").insert({ user_id:recipientId,actor_id:current.profile.id,type:"message",message:"@" + current.profile.username + " shared a post with you." });
       return response({ message },201,origin);
+    }
+
+    if (action === "dm-call-ice-config") {
+      requireUser();
+      const iceServers: RTCIceServer[] = [
+        { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
+      ];
+      const turnUrls = (Deno.env.get("TURN_URLS") || "").split(",").map(value => value.trim()).filter(Boolean);
+      const turnUsername = Deno.env.get("TURN_USERNAME") || "";
+      const turnCredential = Deno.env.get("TURN_CREDENTIAL") || "";
+      if (turnUrls.length && turnUsername && turnCredential) {
+        iceServers.push({ urls: turnUrls, username: turnUsername, credential: turnCredential });
+      }
+      return response({ iceServers, turnConfigured: iceServers.length > 1 }, 200, origin);
     }
 
     if (action === "dm-call-start") {

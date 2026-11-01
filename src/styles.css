@@ -794,3 +794,63 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .update-actions .button{display:inline-flex;align-items:center;justify-content:center;gap:7px}
 .update-platform-note{margin:12px 0 0}
 .app-footer{gap:8px;flex-wrap:wrap}
+
+
+/* VYRA final polish: creator controls, reliable-feeling messaging and calls */
+.profile-tile-delete{
+  position:absolute;top:9px;right:9px;z-index:2;width:34px;height:34px;display:grid;place-items:center;
+  border:1px solid #ffffff32;border-radius:50%;background:#111c;color:#fff;backdrop-filter:blur(10px);
+  cursor:pointer;transition:transform .18s ease,background .18s ease,border-color .18s ease
+}
+.profile-tile-delete:hover:not(:disabled){transform:scale(1.08);background:#b52e49;border-color:#ff9bab}
+.profile-tile-delete:disabled{opacity:.65;cursor:wait}
+.dm-inbox-search{display:flex;align-items:center;gap:8px;margin:12px 12px 3px;padding:10px 11px;border:1px solid var(--line);border-radius:12px;background:#111116;color:#898391}
+.dm-inbox-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:#f5f1fa;font-size:11px}
+.dm-inbox-search input::placeholder{color:#77717f}
+.dm-thread{background:linear-gradient(180deg,#191820 0%,#141319 100%)}
+.dm-thread-head{min-height:70px;background:#1c1a23}
+.dm-thread-title{flex:1;min-width:0}
+.dm-thread-title b{font-size:13px}
+.dm-thread-title small{font-size:10px}
+.dm-sync-pill{display:inline-flex;align-items:center;gap:6px;margin-left:auto;padding:6px 9px;border:1px solid #ffffff12;border-radius:999px;background:#ffffff06;color:#aaa4b2;font-size:9px;white-space:nowrap}
+.dm-sync-pill i{width:6px;height:6px;border-radius:50%;background:#8f8999}
+.dm-sync-live i{background:#63d7a0;box-shadow:0 0 8px #63d7a077}
+.dm-sync-reconnecting i{background:#f2b46d;box-shadow:0 0 8px #f2b46d66}
+.dm-messages{gap:7px;padding:20px 18px;background:radial-gradient(ellipse at 50% 0%,#a48bff0a,transparent 60%);scroll-behavior:smooth}
+.dm-bubble{max-width:min(82%,480px);padding:11px 14px 8px;border-radius:17px 17px 17px 6px;background:#282630;border-color:#ffffff10;box-shadow:0 5px 18px #00000010}
+.dm-bubble-row.mine .dm-bubble{background:linear-gradient(145deg,#6454a2,#4e407e);border-radius:17px 17px 6px 17px}
+.dm-bubble-row.grouped .dm-bubble{border-top-left-radius:8px}
+.dm-bubble-row.mine.grouped .dm-bubble{border-top-right-radius:8px}
+.dm-bubble p{font-size:12px;line-height:1.6}
+.dm-bubble small{display:flex;justify-content:flex-end;align-items:center;gap:5px;margin-top:4px;color:#d4cee1;font-size:9px}
+.dm-compose-inline{align-items:flex-end;padding:13px;background:#1a1921;border-top:1px solid #ffffff12}
+.dm-compose-inline textarea{min-height:46px;max-height:130px;resize:none;background:#25232d;border-color:#45404f;border-radius:17px;padding:13px 15px;font-size:12px;line-height:1.45}
+.dm-compose-inline textarea:focus,.dm-inbox-search:focus-within{border-color:#9f87ed;box-shadow:0 0 0 3px #a48bff18}
+.dm-attach-btn{width:40px;height:40px;flex:0 0 40px;display:grid;place-items:center;border:1px solid #ffffff16;border-radius:50%;background:#282631;color:#c9bcff}
+.dm-attach-btn:hover:not(:disabled){background:#393348}
+.dm-attach-btn.recording{background:#8f3447;color:white;animation:vyra-soft-pulse 1s infinite}
+.dm-send-button{width:42px;height:42px;min-width:42px;padding:0;display:grid;place-items:center;border-radius:50%}
+.dm-no-selection{background:radial-gradient(ellipse at 50% 48%,#a48bff12,transparent 55%)}
+.dm-no-selection>svg{width:44px;height:44px;padding:11px;border:1px solid #a48bff38;border-radius:15px;background:#a48bff12}
+.call-connecting{background:#050505e8}
+.call-network-note{line-height:1.55}
+.call-control-bar>span{max-width:35%;line-height:1.4}
+.spin{animation:vyra-spin .9s linear infinite}
+@keyframes vyra-spin{to{transform:rotate(360deg)}}
+@media(max-width:760px){
+ .dm-thread-head{padding:12px}
+ .dm-sync-pill{font-size:8px;padding:5px 7px}
+ .dm-messages{max-height:48dvh;min-height:260px;padding:16px 12px}
+ .dm-bubble{max-width:88%}
+ .dm-compose-inline{gap:6px;padding:9px}
+ .dm-compose-inline textarea{font-size:12px}
+ .dm-attach-btn{width:35px;height:35px;flex-basis:35px}
+ .dm-send-button{width:37px;height:37px;min-width:37px}
+ .profile-tile-delete{width:32px;height:32px;top:7px;right:7px}
+ .call-window{width:100%;min-height:min(620px,88dvh)}
+ .call-media-stage{min-height:280px}
+ .call-local-video{width:105px;height:80px}
+}
+@media(prefers-reduced-motion:reduce){
+ .spin,.dm-bubble-row,.profile-tile-delete{animation:none!important;transition:none!important}
+}
