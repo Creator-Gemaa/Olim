@@ -273,12 +273,18 @@ Deno.serve(async (req: Request) => {
           if (item.user_id && item.user_id !== current.profile.id) likedCreatorIds.add(item.user_id);
         });
       }
-      const { data: reelRows, error: reelError } = await db.from("posts")
+      const { data: reelCandidates, error: reelError } = await db.from("posts")
         .select("*,author:profiles!posts_user_id_fkey(*)")
-        .eq("status", "approved").eq("media_type", "video").eq("kind", "reel")
-        .neq("user_id", current.profile.id)
-        .order("created_at", { ascending: false }).limit(250);
+        .eq("status", "approved").eq("media_type", "video")
+        .order("created_at", { ascending: false }).limit(500);
       if (reelError) throw reelError;
+      // Include the current creator's own Reels. The former owner exclusion
+      // hid every Reel when the library consisted of one creator's uploads.
+      // Duration fallback repairs legacy rows that were saved with kind="video".
+      const reelRows = (reelCandidates || [])
+        .filter((post: any) => post.kind === "reel" ||
+          (Number(post.duration_seconds) > 0 && Number(post.duration_seconds) <= 120))
+        .map((post: any) => ({ ...post, kind: "reel" }));
       const shuffle = (items: any[]) => {
         const result = [...items];
         for (let index = result.length - 1; index > 0; index--) {
