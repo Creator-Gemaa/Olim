@@ -585,7 +585,7 @@ Deno.serve(async (req: Request) => {
         return fail("Message request not found.", 404, origin);
       }
       if (conversation.status !== "pending" || conversation.requester_id !== current.profile.id) {
-        return fail("Only the request sender can add the first encrypted message.", 403, origin);
+        return fail("Only the request sender can add the first message.", 403, origin);
       }
       const { count } = await db.from("dm_messages")
         .select("id", { count: "exact", head: true }).eq("conversation_id", conversationId);
