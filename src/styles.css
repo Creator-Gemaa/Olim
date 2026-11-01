@@ -982,3 +982,24 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
 .app-shell[data-theme="light"] .legacy-restore-card b{color:#654d24}
 .app-shell[data-theme="light"] .legacy-restore-card small,.app-shell[data-theme="light"] .legacy-restore-note{color:#806835}
 .app-shell[data-theme="light"] .legacy-restore-card input{background:#fff;color:#29313d;border-color:#e2d8c2}
+
+@media(max-width:760px){
+  .topbar{gap:7px;padding:0 10px;min-width:0}
+  .topbar-title{min-width:0;max-width:116px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
+  .topbar-actions{flex:1;min-width:0;justify-content:flex-end;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;gap:5px;padding:0 1px}
+  .topbar-actions::-webkit-scrollbar{display:none}
+  .topbar-actions .global-sound-toggle,.topbar-actions .theme-switch,.topbar-shortcut[aria-label="Home"]{display:none}
+  .topbar-shortcut{width:31px;height:31px;flex:0 0 31px;border-radius:9px}
+  .topbar-shortcut svg{width:15px;height:15px}
+  .top-search{width:32px;min-width:32px;flex:0 0 32px;height:32px;justify-content:center;padding:0;border-radius:9px}
+  .top-search input,.top-search button{display:none}
+  .top-search svg{width:15px;height:15px;flex:none}
+  .create-small{width:32px;height:32px;min-width:32px;flex:0 0 32px;padding:0;border-radius:9px}
+  .create-small svg{width:16px;height:16px}
+}
+@media(max-width:380px){
+  .topbar-title{max-width:88px}
+  .topbar-actions{gap:4px}
+  .topbar-shortcut{width:29px;height:29px;flex-basis:29px}
+  .top-search,.create-small{width:30px;min-width:30px;flex-basis:30px;height:30px}
+}
