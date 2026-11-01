@@ -11,7 +11,7 @@ import {
   Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
-import { classifyVideo, generateVideoCopy, maxBytesFor, videoDuration } from './lib/media';
+import { classifyVideo, generateVideoCopy, isReelVideo, maxBytesFor, videoDuration } from './lib/media';
 import { uploadChatAttachment } from './lib/api';
 import {
   unlockE2EEIdentity, deriveConversationKey, decryptText, decryptFile,
@@ -1836,7 +1836,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const openProfile = useCallback((profile: User) => { setViewProfile(profile); setTab('profile'); }, []);
   const loadFeed = useCallback(async () => {
     const r = await callApi<{ posts: Post[]; stories: Story[]; worldFeed: Post[]; reels?: Post[] }>('feed', {}, token);
-    setPosts(r.posts); setStories(r.stories); setWorldFeed(r.worldFeed || []); setReelsFeed(r.reels || []);
+    setPosts(r.posts); setStories(r.stories); setWorldFeed(r.worldFeed || []); setReelsFeed(r.reels?.length ? r.reels : (r.posts || []).filter(isReelVideo));
   }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
   useEffect(() => {
