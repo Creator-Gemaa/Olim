@@ -11,10 +11,10 @@ import {
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, generateVideoCopy, maxBytesFor, videoDuration } from './lib/media';
-import { uploadEncryptedAttachment } from './lib/api';
+import { uploadChatAttachment } from './lib/api';
 import {
-  createE2EEIdentity, unlockE2EEIdentity, deriveConversationKey, encryptText, decryptText,
-  encryptFile, decryptFile, conversationSafetyCode, type E2EEIdentity, type StoredE2EEIdentity,
+  unlockE2EEIdentity, deriveConversationKey, decryptText, decryptFile,
+  type E2EEIdentity, type StoredE2EEIdentity,
 } from './lib/e2ee';
 
 type User = {
@@ -24,10 +24,10 @@ type User = {
 type Post = {
   id: string; title?: string; caption: string; media_url: string; media_type: 'image' | 'video';
   kind: 'photo' | 'reel' | 'video'; duration_seconds: number; likes_count: number;
-  comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; is_world_featured?: boolean;
+  comments_count: number; views_count?: number; created_at: string; author: User; liked: boolean; saved?: boolean; is_world_featured?: boolean;
 };
 type Story = { id: string; media_url: string; media_type: 'image' | 'video'; caption: string; author: User; created_at: string };
-type Tab = 'home' | 'reels' | 'explore' | 'messages' | 'profile' | 'notifications' | 'settings' | 'admin';
+type Tab = 'home' | 'reels' | 'explore' | 'messages' | 'profile' | 'notifications' | 'saved' | 'settings' | 'admin';
 type DMMessage = {
   id: string; conversation_id: string; sender_id: string; content: string; created_at: string;
   message_type?: 'text' | 'image' | 'voice' | 'shared_post'; media_url?: string | null;
@@ -81,16 +81,32 @@ function formatPlayerTime(value: number) {
   return Math.floor(seconds / 60) + ':' + String(seconds % 60).padStart(2, '0');
 }
 
-const VYRAPlayer = memo(function VYRAPlayer({ src, soundEnabled, onToggleSound, className = '', autoPlay = false, loop = false, postId, onPlay, showTimeline = true }: {
+const VYRAPlayer = memo(function VYRAPlayer({ src, soundEnabled, onToggleSound, className = '', autoPlay = false, loop = false, postId, onPlay, onDoubleTap, showTimeline = true }: {
   src: string; soundEnabled: boolean; onToggleSound?: () => void; className?: string; autoPlay?: boolean; loop?: boolean;
-  postId?: string; onPlay?: () => void; showTimeline?: boolean;
+  postId?: string; onPlay?: () => void; onDoubleTap?: () => void; showTimeline?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [playing, setPlaying] = useState(false);
   const [buffering, setBuffering] = useState(false);
   const [duration, setDuration] = useState(0);
   const [currentTime, setCurrentTime] = useState(0);
+  const [heartBurst, setHeartBurst] = useState(false);
+  const clickTimerRef = useRef<number | null>(null);
+  const heartTimerRef = useRef<number | null>(null);
   useEffect(() => { if (videoRef.current) videoRef.current.muted = !soundEnabled; }, [soundEnabled]);
+  useEffect(() => () => { if (clickTimerRef.current !== null) window.clearTimeout(clickTimerRef.current); if (heartTimerRef.current !== null) window.clearTimeout(heartTimerRef.current); }, []);
+  function handleVideoClick() {
+    if (clickTimerRef.current !== null) {
+      window.clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      setHeartBurst(true);
+      if (heartTimerRef.current !== null) window.clearTimeout(heartTimerRef.current);
+      heartTimerRef.current = window.setTimeout(() => setHeartBurst(false), 900);
+      onDoubleTap?.();
+      return;
+    }
+    clickTimerRef.current = window.setTimeout(() => { clickTimerRef.current = null; togglePlayback(); }, 240);
+  }
   function togglePlayback() {
     const video = videoRef.current;
     if (!video) return;
@@ -111,14 +127,15 @@ const VYRAPlayer = memo(function VYRAPlayer({ src, soundEnabled, onToggleSound, 
   return <div className={'vyra-player ' + (playing ? 'is-playing ' : '') + (buffering ? 'is-buffering ' : '') + className}>
     <video ref={videoRef} src={src} data-vyra-player="true" data-post-id={postId}
       muted={!soundEnabled} autoPlay={autoPlay} loop={loop} playsInline preload="metadata"
-      aria-label="VYRA video player" onClick={togglePlayback}
+      aria-label="VYRA video player" onClick={handleVideoClick}
       onPlay={() => { setPlaying(true); setBuffering(false); onPlay?.(); }}
       onPause={() => { setPlaying(false); setBuffering(false); }}
       onWaiting={() => setBuffering(true)} onCanPlay={() => setBuffering(false)}
       onEnded={() => setPlaying(false)}
       onLoadedMetadata={event => setDuration(Number.isFinite(event.currentTarget.duration) ? event.currentTarget.duration : 0)}
       onTimeUpdate={event => setCurrentTime(event.currentTarget.currentTime)} />
-    <span className="vyra-player-brand">VYRA PLAYER</span>
+    <span className="vyra-player-brand">VYRA</span>
+    {heartBurst && <span className="reel-heart-burst" aria-hidden="true"><Heart size={84} fill="currentColor" strokeWidth={1.5} /></span>}
     {buffering && <span className="vyra-player-buffer" aria-label="Buffering" />}
     <button className="vyra-player-center" type="button" onClick={togglePlayback} aria-label={playing ? 'Pause video' : 'Play video'}>
       {playing ? <Pause size={28} fill="currentColor" /> : <Play size={28} fill="currentColor" />}
@@ -183,7 +200,7 @@ function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
         <label>USERNAME<input value={username} onChange={e => setUsername(e.target.value)} placeholder="yourcreativehandle" autoComplete="username" maxLength={24} /></label>
         <label>PASSWORD<input type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="At least 10 characters" autoComplete="new-password" /></label>
         <label>CONFIRM PASSWORD<input type="password" value={confirm} onChange={e => setConfirm(e.target.value)} placeholder="Type it one more time" autoComplete="new-password" /></label>
-        <p className="microcopy owner-hint">The reserved username <b>Owner</b> creates the founder account and opens the admin panel directly after login.</p>
+        
       </div>}
       {mode === 'signup' && step === 2 && <div className="choice-grid fade-in">{['Google', 'Friends', 'AI', 'Other'].map((item, i) => <button key={item} className={'choice-card ' + (heard === item ? 'selected' : '')} onClick={() => setHeard(item)}><span>{['◉', '◎', '✧', '↗'][i]}</span><b>{item}</b>{heard === item && <Check size={16} />}</button>)}</div>}
       {mode === 'signup' && step === 3 && <div className="form-stack fade-in"><label>DATE OF BIRTH<input type="date" value={birth} onChange={e => setBirth(e.target.value)} max={new Date().toISOString().slice(0, 10)} /></label><div className="privacy-note"><ShieldCheck size={17} /> Your birth date is private and never shown on your public profile.</div></div>}
@@ -207,8 +224,8 @@ function StoryRail({ stories, me, onAdd, onOpen }: { stories: Story[]; me: User;
   </div>;
 }
 
-const PostCard = memo(function PostCard({ post, token, onLike, onComment, onProfile, onView, soundEnabled, onToggleSound }: {
-  post: Post; token: string; onLike: (post: Post) => void;
+const PostCard = memo(function PostCard({ post, token, onLike, onSave, onComment, onProfile, onView, soundEnabled, onToggleSound }: {
+  post: Post; token: string; onLike: (post: Post) => void; onSave: (post: Post) => void;
   onComment: (post: Post, text: string) => Promise<void>;
   onProfile: (profile: User) => void; onView?: (postId: string) => void;
   soundEnabled: boolean; onToggleSound: () => void;
@@ -250,8 +267,8 @@ const PostCard = memo(function PostCard({ post, token, onLike, onComment, onProf
   }
   return <article className="post-card">
     <div className="post-head"><button className="post-author" onClick={() => onProfile(post.author)}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <VerifiedBadge />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
-    <div className="post-media">{post.media_type === 'video' ? <VYRAPlayer src={post.media_url} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
-    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div><button className="action-button" aria-label="Save post"><Bookmark size={20} /></button></div>
+    <div className="post-media">{post.media_type === 'video' ? <VYRAPlayer src={post.media_url} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onDoubleTap={() => { if (!post.liked) onLike(post); }} onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
+    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div>{post.media_type === 'video' && <button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save video'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button>}</div>
     <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
     {showComments && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
   </article>;
@@ -498,8 +515,8 @@ function ShortCommentsSheet({ post, token, onClose, onComment }: {
   </div>;
 }
 
-function ShareSheet({ post, token, identity, onClose, onToast }: {
-  post: Post; token: string; identity: E2EEIdentity | null; onClose: () => void; onToast: (message: string) => void;
+function ShareSheet({ post, token, onClose, onToast }: {
+  post: Post; token: string; onClose: () => void; onToast: (message: string) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
   const [loading, setLoading] = useState(true);
@@ -513,14 +530,9 @@ function ShareSheet({ post, token, identity, onClose, onToast }: {
     return () => { active = false; };
   }, [token, onToast]);
   async function send(item: DMConversation) {
-    if (!identity) { onToast('Open Messages and unlock encrypted chat first.'); return; }
     setSending(item.id);
     try {
-      const peer = await callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: item.otherUser.username }, token);
-      if (!peer.key?.publicKey) throw new Error('@' + item.otherUser.username + ' has not enabled secure messages yet.');
-      const key = await deriveConversationKey(identity, peer.key.publicKey, item.id);
-      const content = await encryptText('Shared a Reel with you', key);
-      await callApi('dm-share-post', { conversationId: item.id, postId: post.id, content }, token);
+      await callApi('dm-share-post', { conversationId: item.id, postId: post.id, content: 'Shared a video with you.' }, token);
       onToast('Reel shared with @' + item.otherUser.username + '.');
       onClose();
     } catch (error) {
@@ -531,17 +543,15 @@ function ShareSheet({ post, token, identity, onClose, onToast }: {
     <section className="share-sheet" role="dialog" aria-label="Share Reel with friends">
       <header><div><p className="eyebrow">SEND PRIVATELY</p><h3>Share with friends</h3></div><button className="icon-button" onClick={onClose}><X /></button></header>
       <div className="share-preview"><div className="share-preview-thumb">{post.media_type === 'video' ? <video src={post.media_url} muted data-vyra-mute-lock="true" /> : <img src={post.media_url} alt="" />}</div><div><b>@{post.author.username}</b><p>{post.caption || 'A Reel on VYRA'}</p></div></div>
-      {!identity && <div className="secure-warning"><LockKeyhole size={16} /> Unlock secure messaging in Messages before sharing.</div>}
       <div className="share-friends">
         {loading ? <p className="dm-empty-note">Loading your chats…</p> : conversations.length ? conversations.map(item =>
-          <button key={item.id} className="share-friend" onClick={() => send(item)} disabled={!identity || sending !== null}>
+          <button key={item.id} className="share-friend" onClick={() => send(item)} disabled={sending !== null}>
             <Avatar user={item.otherUser} size="md" />
-            <span><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>Encrypted chat</small></span>
+            <span><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>Message</small></span>
             <span className="share-send">{sending === item.id ? 'Sending…' : <Send size={17} />}</span>
           </button>
         ) : <div className="dm-no-selection"><MessageCircle size={26} /><b>No chats to share with yet.</b><p>Accept a message request or start a chat first.</p></div>}
       </div>
-      <p className="share-sheet-note"><LockKeyhole size={13} /> The share note is encrypted before it leaves this device.</p>
     </section>
   </div>;
 }
@@ -754,7 +764,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   const incoming = !isCaller && callStatus === 'ringing';
   return <div className="call-overlay">
     <div className="call-window">
-      <div className="call-window-top"><span><LockKeyhole size={14} /> Peer-to-peer encrypted call</span><button className="icon-button" onClick={() => endCall(incoming ? 'decline' : 'end')}><X size={17} /></button></div>
+      <div className="call-window-top"><span><LockKeyhole size={14} /> Private call</span><button className="icon-button" onClick={() => endCall(incoming ? 'decline' : 'end')}><X size={17} /></button></div>
       {incoming ? <div className="call-incoming"><div className="call-avatar"><Phone size={30} /></div><h2>Incoming {call.call_type} call</h2><p>Accept to connect directly.</p><div><button className="call-answer" onClick={answerCall}><Phone size={17} /> Answer</button><button className="call-decline" onClick={() => endCall('decline')}><PhoneOff size={17} /> Decline</button></div></div>
         : <div className="call-media-stage">
           <video ref={remoteVideoRef} autoPlay playsInline data-vyra-mute-lock="true" className={'call-remote-video ' + (call.call_type === 'audio' ? 'audio-only' : '')} />
@@ -778,9 +788,10 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   </div>;
 }
 
-function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare, token, soundEnabled }: {
+function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShare, token, soundEnabled }: {
   posts: Post[];
   onLike: (post: Post) => void;
+  onSave: (post: Post) => void;
   onProfile: (user: User) => void;
   onView: (postId: string) => void;
   onComment: (post: Post, text: string) => Promise<void>;
@@ -829,7 +840,7 @@ function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare, token
   return <>
     <div ref={scrollerRef} className="reels-scroller" aria-label="Vertical Reels feed">
       {posts.map(post => <article className="reel-screen" key={post.id}>
-        <VYRAPlayer src={post.media_url} postId={post.id} soundEnabled={soundEnabled} autoPlay loop className="reel-video-player" showTimeline={false} />
+        <VYRAPlayer src={post.media_url} postId={post.id} soundEnabled={soundEnabled} autoPlay loop className="reel-video-player" showTimeline={false} onDoubleTap={() => { if (!post.liked) onLike(post); }} />
         <div className="reel-shade" />
         <div className="reel-overlay">
           <button className="reel-author" onClick={() => onProfile(post.author)}>
@@ -846,6 +857,9 @@ function ReelsFeed({ posts, onLike, onProfile, onView, onComment, onShare, token
           </button>
           <button onClick={() => setCommentPost(post)} aria-label="View comments">
             <MessageCircle size={25} /><span>{post.comments_count.toLocaleString()}</span>
+          </button>
+          <button className={post.saved ? 'is-saved' : ''} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove saved video' : 'Save video'} aria-pressed={!!post.saved}>
+            <Bookmark size={24} fill={post.saved ? 'currentColor' : 'none'} /><span>{post.saved ? 'Saved' : 'Save'}</span>
           </button>
           <button onClick={() => onShare(post)} aria-label="Share Reel with friends">
             <Send size={24} /><span>Share</span>
@@ -908,10 +922,9 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
 }
 
 
-function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentityReady, onStartCall }: {
+function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCall }: {
   token: string; user: User; target: User | null; onClearTarget: () => void;
-  onToast: (message: string) => void; onIdentityReady: (identity: E2EEIdentity | null) => void;
-  onStartCall: (call: any) => void;
+  onToast: (message: string) => void; onStartCall: (call: any) => void;
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -922,16 +935,14 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const [composer, setComposer] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [keyLoading, setKeyLoading] = useState(true);
-  const [keyState, setKeyState] = useState<'missing' | 'locked' | 'ready'>('missing');
+  const [keyLoading, setKeyLoading] = useState(false);
+  const [legacyKeyChecked, setLegacyKeyChecked] = useState(false);
   const [storedKey, setStoredKey] = useState<StoredE2EEIdentity | null>(null);
   const [identity, setIdentity] = useState<E2EEIdentity | null>(null);
   const [password, setPassword] = useState('');
   const [keyError, setKeyError] = useState('');
   const [decoded, setDecoded] = useState<Record<string, string>>({});
   const [attachmentUrls, setAttachmentUrls] = useState<Record<string, string>>({});
-  const [safetyCode, setSafetyCode] = useState('');
-  const [showSafetyCode, setShowSafetyCode] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [deletingMessageId, setDeletingMessageId] = useState<string | null>(null);
   const messagesRef = useRef<HTMLDivElement | null>(null);
@@ -946,23 +957,6 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     setSyncStatus('live');
   }, [token]);
 
-  useEffect(() => {
-    let active = true;
-    callApi<{ key: (StoredE2EEIdentity & { username: string }) | null }>('e2ee-key-get', { username: user.username }, token)
-      .then(result => {
-        if (!active) return;
-        if (result.key) {
-          setStoredKey(result.key);
-          setKeyState('locked');
-        } else {
-          setStoredKey(null);
-          setKeyState('missing');
-        }
-      })
-      .catch(error => { if (active) setKeyError(error instanceof Error ? error.message : 'Secure messaging is unavailable.'); })
-      .finally(() => { if (active) setKeyLoading(false); });
-    return () => { active = false; };
-  }, [token, user.username]);
 
   useEffect(() => {
     loadInbox().catch(error => onToast(error instanceof Error ? error.message : 'Could not load messages.'))
@@ -1005,79 +999,49 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   }, [messages, selectedId]);
 
   const selected = conversations.find(item => item.id === selectedId) || null;
-  const selectedPeerUsername = selected?.otherUser.username || '';
-  const selectedAccepted = selected?.status === 'accepted';
-  useEffect(() => {
-    let active = true;
-    setShowSafetyCode(false);
-    if (!identity || !selectedId || !selectedPeerUsername || !selectedAccepted) {
-      setSafetyCode('');
-      return () => { active = false; };
-    }
-    callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: selectedPeerUsername }, token)
-      .then(async result => {
-        if (!result.key?.publicKey) throw new Error('The other creator has not enabled secure messaging.');
-        const code = await conversationSafetyCode(identity.publicKey, result.key.publicKey, selectedId);
-        if (active) setSafetyCode(code);
-      })
-      .catch(() => { if (active) setSafetyCode('Unavailable'); });
-    return () => { active = false; };
-  }, [identity, selectedId, selectedPeerUsername, selectedAccepted, token]);
   const incoming = conversations.filter(item => item.status === 'pending' && item.requester_id !== user.id);
   const sent = conversations.filter(item => item.status === 'pending' && item.requester_id === user.id);
   const chats = conversations.filter(item => item.status === 'accepted');
   const matchesInbox = (item: DMConversation) => !inboxSearch.trim()
     || item.otherUser.username.toLowerCase().includes(inboxSearch.trim().replace(/^@/, '').toLowerCase());
 
-  async function unlockOrCreateKeys(event: FormEvent) {
+  useEffect(() => {
+    if (legacyKeyChecked || !messages.some(message => message.e2ee_version === 1)) return;
+    let active = true;
+    setLegacyKeyChecked(true);
+    setKeyLoading(true);
+    callApi<{ key: (StoredE2EEIdentity & { username: string }) | null }>('e2ee-key-get', { username: user.username }, token)
+      .then(result => { if (active) setStoredKey(result.key); })
+      .catch(error => { if (active) setKeyError(error instanceof Error ? error.message : 'Older message history is unavailable.'); })
+      .finally(() => { if (active) setKeyLoading(false); });
+    return () => { active = false; };
+  }, [messages, legacyKeyChecked, token, user.username]);
+
+  async function unlockLegacyMessages(event: FormEvent) {
     event.preventDefault();
+    if (!storedKey) return;
     setBusy(true);
     setKeyError('');
     try {
-      if (storedKey) {
-        const opened = await unlockE2EEIdentity(user.id, password, storedKey);
-        setIdentity(opened);
-        onIdentityReady(opened);
-      } else {
-        const created = await createE2EEIdentity(user.id, password);
-        await callApi('e2ee-key-set', {
-          publicKey: created.stored.publicKey,
-          wrappedPrivateKey: created.stored.wrappedPrivateKey,
-          salt: created.stored.salt,
-          iv: created.stored.iv,
-        }, token);
-        setStoredKey(created.stored);
-        setIdentity(created.identity);
-        setKeyState('ready');
-        onIdentityReady(created.identity);
-      }
+      const opened = await unlockE2EEIdentity(user.id, password, storedKey);
+      setIdentity(opened);
       setPassword('');
-      setKeyState('ready');
       peerKeyCache.current.clear();
-      await loadInbox();
+      onToast('Older messages restored on this device. New chats stay simple.');
     } catch (error) {
-      setKeyError(error instanceof Error ? error.message : 'Could not unlock secure messaging.');
+      setKeyError(error instanceof Error ? error.message : 'Could not restore older messages.');
     } finally { setBusy(false); }
   }
 
-  function lockKeys() {
-    setIdentity(null);
-    setKeyState(storedKey ? 'locked' : 'missing');
-    setDecoded({});
-    setAttachmentUrls({});
-    peerKeyCache.current.clear();
-    onIdentityReady(null);
-  }
-
   async function getPeerPublicKey(peer: User): Promise<JsonWebKey> {
-    if (!identity) throw new Error('Unlock secure messaging first.');
+    if (!identity) throw new Error('Restore the older encrypted conversation first.');
     const result = await callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: peer.username }, token);
-    if (!result.key?.publicKey) throw new Error('@' + peer.username + ' needs to enable secure messaging before you can chat.');
+    if (!result.key?.publicKey) throw new Error('The older conversation cannot be restored without @' + peer.username + '’s original key.');
     return result.key.publicKey;
   }
 
   async function getConversationKey(conversation: DMConversation): Promise<CryptoKey> {
-    if (!identity) throw new Error('Unlock secure messaging first.');
+    if (!identity) throw new Error('Restore the older encrypted conversation first.');
     const cached = peerKeyCache.current.get(conversation.id);
     if (cached) return cached;
     const publicKey = await getPeerPublicKey(conversation.otherUser);
@@ -1089,72 +1053,59 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   useEffect(() => {
     let active = true;
     const urls: string[] = [];
-    async function decryptVisibleMessages() {
-      if (!identity || !selected) { setDecoded({}); setAttachmentUrls({}); return; }
-      try {
-        const key = await getConversationKey(selected);
-        const textMap: Record<string, string> = {};
-        const urlMap: Record<string, string> = {};
-        for (const message of messages) {
-          if (message.e2ee_version === 1) {
+    async function decodeVisibleMessages() {
+      const textMap: Record<string, string> = {};
+      const urlMap: Record<string, string> = {};
+      const legacyMessages = messages.filter(message => message.e2ee_version === 1);
+      let key: CryptoKey | null = null;
+      if (legacyMessages.length && identity && selected) {
+        try { key = await getConversationKey(selected); } catch { key = null; }
+      }
+      for (const message of messages) {
+        if (message.e2ee_version === 1) {
+          if (!key) textMap[message.id] = 'This older message needs its original VYRA key. Use Restore older messages above.';
+          else {
             try { textMap[message.id] = await decryptText(message.content, key); }
-            catch { textMap[message.id] = 'Unable to decrypt this message. Check that both devices use the same encryption key.'; }
-          } else {
-            textMap[message.id] = message.content + '  ·  Older message, not end-to-end encrypted';
+            catch { textMap[message.id] = 'This older message could not be restored with the saved key.'; }
           }
-          if (message.media_url && message.attachment_iv && message.attachment_mime) {
+        } else textMap[message.id] = message.content;
+        if (message.media_url && message.attachment_iv && message.attachment_mime) {
+          if (key && selected) {
             try {
               const response = await fetch(message.media_url);
-              if (!response.ok) throw new Error('Encrypted file unavailable');
+              if (!response.ok) throw new Error('Legacy attachment unavailable');
               const ciphertext = await response.blob();
               const plain = await decryptFile(ciphertext, message.attachment_iv, key, selected.id, message.attachment_mime);
-              const url = URL.createObjectURL(plain);
-              urls.push(url);
-              urlMap[message.id] = url;
-            } catch {
-              textMap[message.id] = 'Encrypted attachment could not be opened on this device.';
-            }
+              const objectUrl = URL.createObjectURL(plain);
+              urls.push(objectUrl);
+              urlMap[message.id] = objectUrl;
+            } catch { textMap[message.id] = 'This older attachment could not be restored on this device.'; }
           }
-        }
-        if (active) { setDecoded(textMap); setAttachmentUrls(urlMap); }
-      } catch (error) {
-        if (active) onToast(error instanceof Error ? error.message : 'Could not decrypt this conversation.');
+        } else if (message.media_url) urlMap[message.id] = message.media_url;
       }
+      if (active) { setDecoded(textMap); setAttachmentUrls(urlMap); }
     }
-    void decryptVisibleMessages();
+    void decodeVisibleMessages();
     return () => { active = false; urls.forEach(url => URL.revokeObjectURL(url)); };
   }, [identity, selectedId, messages, token]);
 
   async function sendRequest(event: FormEvent) {
     event.preventDefault();
     if (!composeTarget || !composer.trim()) return;
-    if (!identity) { onToast('Unlock secure messaging first.'); return; }
     setBusy(true);
     try {
       const result = await callApi<{ conversationId: string; status: string }>('dm-start', { username: composeTarget.username }, token);
       if (result.status === 'incoming') {
-        await loadInbox();
-        setComposeTarget(null);
-        setSelectedId(result.conversationId);
-        onToast('This creator has already requested to message you. Review the request.');
-        return;
+        await loadInbox(); setComposeTarget(null); setSelectedId(result.conversationId);
+        onToast('This creator has already requested to message you. Review the request.'); return;
       }
-      const peerPublic = await getPeerPublicKey(composeTarget);
-      const key = await deriveConversationKey(identity, peerPublic, result.conversationId);
-      const encrypted = await encryptText(composer.trim(), key);
-      if (result.status === 'accepted') {
-        await callApi('dm-send', { conversationId: result.conversationId, content: encrypted, messageType: 'text' }, token);
-      } else {
-        await callApi('dm-request-send', { conversationId: result.conversationId, content: encrypted }, token);
-      }
-      setComposer('');
-      setComposeTarget(null);
-      await loadInbox();
-      setSelectedId(result.conversationId);
-      onToast(result.status === 'pending' ? 'Encrypted message request sent.' : 'Encrypted message sent.');
-    } catch (error) {
-      onToast(error instanceof Error ? error.message : 'Could not send message request.');
-    } finally { setBusy(false); }
+      const content = composer.trim();
+      if (result.status === 'accepted') await callApi('dm-send', { conversationId: result.conversationId, content, messageType: 'text' }, token);
+      else await callApi('dm-request-send', { conversationId: result.conversationId, content }, token);
+      setComposer(''); setComposeTarget(null); await loadInbox(); setSelectedId(result.conversationId);
+      onToast(result.status === 'pending' ? 'Message request sent.' : 'Message sent.');
+    } catch (error) { onToast(error instanceof Error ? error.message : 'Could not send message request.'); }
+    finally { setBusy(false); }
   }
 
   async function respond(decision: 'accept' | 'decline') {
@@ -1174,23 +1125,18 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
 
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
-    if (!selected || !composer.trim() || !identity) return;
-    const text = composer.trim();
-    setBusy(true);
+    if (!selected || !composer.trim()) return;
+    const text = composer.trim(); setBusy(true);
     try {
-      const key = await getConversationKey(selected);
-      const content = await encryptText(text, key);
       setComposer('');
-      const result = await callApi<{ message: DMMessage }>('dm-send', { conversationId: selected.id, content, messageType: 'text' }, token);
+      const result = await callApi<{ message: DMMessage }>('dm-send', { conversationId: selected.id, content: text, messageType: 'text' }, token);
       setMessages(current => [...current.filter(message => message.id !== result.message.id), result.message]
         .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
-      setSyncStatus('live');
-      await loadInbox();
+      setSyncStatus('live'); await loadInbox();
     } catch (error) {
       setComposer(current => current || text);
       onToast(error instanceof Error ? error.message : 'Message could not be sent.');
-    }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   }
 
   async function copyMessage(message: DMMessage) {
@@ -1215,7 +1161,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
       setMessages(current => current.filter(item => item.id !== message.id));
       await loadInbox();
       onToast(result.storageCleanupPending
-        ? 'Message removed. Encrypted attachment cleanup is pending.'
+        ? 'Message removed. Attachment cleanup is pending.'
         : 'Message removed for everyone.');
     } catch (error) {
       onToast(error instanceof Error ? error.message : 'Could not remove this message.');
@@ -1225,21 +1171,14 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   }
 
   async function sendAttachment(file: Blob, messageType: 'image' | 'voice', mime: string) {
-    if (!selected || selected.status !== 'accepted' || !identity) throw new Error('Unlock secure messages and select an accepted chat first.');
+    if (!selected || selected.status !== 'accepted') throw new Error('Select an accepted chat first.');
     if (file.size > 15 * 1024 * 1024) throw new Error('Attachments must be 15 MB or smaller.');
     setBusy(true);
     try {
-      const key = await getConversationKey(selected);
-      const encryptedFile = await encryptFile(file, key, selected.id);
-      const path = await uploadEncryptedAttachment(encryptedFile.blob, selected.id, token, messageType, mime);
-      const encryptedCaption = await encryptText(messageType === 'image' ? 'Photo' : 'Voice note', key);
-      await callApi('dm-send', {
-        conversationId: selected.id, content: encryptedCaption, messageType,
-        attachmentPath: path, attachmentIv: encryptedFile.iv, attachmentMime: mime,
-      }, token);
+      const path = await uploadChatAttachment(file, selected.id, token, messageType, mime);
+      await callApi('dm-send', { conversationId: selected.id, content: messageType === 'image' ? 'Photo' : 'Voice note', messageType, attachmentPath: path, attachmentMime: mime }, token);
       const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
-      setMessages(result.messages);
-      await loadInbox();
+      setMessages(result.messages); await loadInbox();
     } finally { setBusy(false); }
   }
 
@@ -1296,22 +1235,19 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const conversationButton = (item: DMConversation, label?: string) =>
     <button key={item.id} className={'dm-list-item ' + (selectedId === item.id ? 'active' : '')} onClick={() => { setComposeTarget(null); setSelectedId(item.id); }}>
       <Avatar user={item.otherUser} size="md" />
-      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.preview || 'Encrypted chat'}</small></span>
+      <span className="dm-list-copy"><b>@{item.otherUser.username} {item.otherUser.is_verified && <VerifiedBadge />}</b><small>{label || item.last_message?.preview || 'Start a conversation'}</small></span>
       <small className="dm-list-time">{ago(item.last_message_at)}</small>
     </button>;
 
   return <section className="content-page dm-page">
-    <div className="page-intro dm-page-intro"><p className="eyebrow">PRIVATE BY DESIGN</p><h2>Your messages.</h2><p>New messages, photos and voice notes are encrypted on this device before being sent.</p></div>
-    {keyState !== 'ready' && <form className="e2ee-unlock-card" onSubmit={unlockOrCreateKeys}>
-      <div className="e2ee-lock-icon"><LockKeyhole size={23} /></div>
-      <div className="e2ee-copy"><b>{keyState === 'missing' ? 'Set up secure messaging' : 'Unlock your encrypted messages'}</b>
-        <small>{storedKey ? 'Enter your VYRA password to unlock your private key on this device.' : 'Your private key is generated on this device and stored only as a password-encrypted backup.'}</small>
-      </div>
+    <div className="page-intro dm-page-intro"><p className="eyebrow">STAY IN THE LOOP</p><h2>Your messages.</h2><p>Chat with creators, share photos and send voice notes.</p></div>
+    {messages.some(message => message.e2ee_version === 1) && storedKey && !identity && <form className="legacy-restore-card" onSubmit={unlockLegacyMessages}>
+      <div><b>Restore older messages</b><small>Only conversations from VYRA’s previous chat system need this. New chats work without it.</small></div>
       <label><span>VYRA password</span><input type="password" value={password} onChange={event => setPassword(event.target.value)} required minLength={10} autoComplete="current-password" /></label>
       {keyError && <div className="form-error">{keyError}</div>}
-      <button className="button button-primary" disabled={busy || keyLoading}>{busy ? 'Securing…' : storedKey ? 'Unlock messages' : 'Create encryption key'}</button>
+      <button className="button button-soft" disabled={busy || keyLoading}>{busy ? 'Restoring…' : 'Restore history'}</button>
     </form>}
-    {keyState === 'ready' && <div className="e2ee-status"><LockKeyhole size={14} /><span>End-to-end encryption is enabled for new messages.</span><button onClick={lockKeys}>Lock</button></div>}
+    {messages.some(message => message.e2ee_version === 1) && legacyKeyChecked && !storedKey && !keyLoading && <div className="legacy-restore-note">Some older messages need the private key used when they were sent. This account has no saved legacy key, so those specific messages cannot be decoded. New messages are unaffected.</div>}
     <div className="dm-layout">
       <aside className="dm-inbox">
         <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => setSyncStatus('reconnecting'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
@@ -1326,25 +1262,17 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
 
       <section className="dm-thread">
         {composeTarget ? <>
-          <div className="dm-thread-head"><Avatar user={composeTarget} size="md" /><div><b>@{composeTarget.username} {composeTarget.is_verified && <VerifiedBadge />}</b><small>New message request · encrypted</small></div></div>
-          <div className="dm-request-intro"><LockKeyhole size={28} /><h3>Start a private conversation.</h3><p>Your message is encrypted before leaving your device. They must accept before the chat opens.</p></div>
-          <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} disabled={!identity} /><button className="button button-primary" disabled={busy || !composer.trim() || !identity}><Send size={16} /> Send request</button></form>
+          <div className="dm-thread-head"><Avatar user={composeTarget} size="md" /><div><b>@{composeTarget.username} {composeTarget.is_verified && <VerifiedBadge />}</b><small>New message request</small></div></div>
+          <div className="dm-request-intro"><MessageCircle size={28} /><h3>Start a conversation.</h3><p>Your message will be sent as a request. They can accept before the chat opens.</p></div>
+          <form className="dm-compose" onSubmit={sendRequest}><textarea rows={3} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={'Write a message to @' + composeTarget.username + '…'} /><button className="button button-primary" disabled={busy || !composer.trim()}><Send size={16} /> Send request</button></form>
         </> : selected ? <>
           <div className="dm-thread-head">
             <Avatar user={selected.otherUser} size="md" />
-            <div className="dm-thread-title"><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'End-to-end encrypted chat' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Encrypted message request'}</small></div>
+            <div className="dm-thread-title"><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'Active conversation' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Message request'}</small></div>
             {selected.status === 'accepted' && <span className={'dm-sync-pill dm-sync-' + syncStatus}><i />{syncStatus === 'live' ? 'Live' : syncStatus === 'syncing' ? 'Syncing' : 'Reconnecting'}</span>}
             {selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
           </div>
           {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
-          <button type="button" className="dm-encryption-note dm-safety-toggle" onClick={() => setShowSafetyCode(value => !value)}>
-            <LockKeyhole size={12} /> End-to-end encrypted · {showSafetyCode ? 'Hide' : 'Compare safety code'}
-          </button>
-          {showSafetyCode && <div className="dm-safety-code">
-            <small>Conversation safety code</small>
-            <strong>{safetyCode || 'Generating…'}</strong>
-            <p>Ask @{selected.otherUser.username} to open this same panel on their device and compare all groups using another trusted channel. A mismatch means you should not send sensitive information.</p>
-          </div>}
           <div className="dm-messages" ref={messagesRef} aria-live="polite" aria-relevant="additions">
             {messages.map((message, messageIndex) => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '') + (messages[messageIndex - 1]?.sender_id === message.sender_id ? ' grouped' : '')}>
               <div className="dm-bubble">
@@ -1352,10 +1280,10 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
                   {message.shared_post.media_type === 'video' ? <video src={message.shared_post.media_url} muted playsInline /> : <img src={message.shared_post.media_url} alt="Shared post" />}
                   <b>@{message.shared_post.author.username}</b><p>{message.shared_post.caption}</p><small>Shared from VYRA</small>
                 </div>}
-                {message.message_type === 'image' && attachmentUrls[message.id] && <img className="dm-attachment-image" src={attachmentUrls[message.id]} alt="End-to-end encrypted photo" />}
+                {message.message_type === 'image' && attachmentUrls[message.id] && <img className="dm-attachment-image" src={attachmentUrls[message.id]} alt="Shared photo" />}
                 {message.message_type === 'voice' && attachmentUrls[message.id] && <audio className="dm-voice-player" controls src={attachmentUrls[message.id]} />}
-                {message.e2ee_version === 1 && !decoded[message.id] ? <p className="dm-decrypting">Decrypting…</p> : <p>{decoded[message.id] || (message.e2ee_version === 1 ? '🔒 Unlock secure messaging to read this.' : message.content)}</p>}
-                <small>{ago(message.created_at)} {message.e2ee_version === 1 && <LockKeyhole size={10} />}</small>
+                <p>{decoded[message.id] || message.content}</p>
+                <small>{ago(message.created_at)} {message.e2ee_version === 1 && <span title="Older encrypted message">Legacy</span>}</small>
                 <div className="dm-bubble-tools">
                   {message.message_type === 'text' && decoded[message.id] && <button type="button" title="Copy message" aria-label="Copy message" onClick={() => void copyMessage(message)}><Copy size={13} /></button>}
                   {message.sender_id === user.id && <button type="button" title="Unsend message" aria-label="Unsend message" disabled={deletingMessageId === message.id || !!deletingMessageId} onClick={() => void deleteMessage(message)}>{deletingMessageId === message.id ? <RefreshCw size={13} className="spin" /> : <Trash2 size={13} />}</button>}
@@ -1365,10 +1293,10 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
           </div>
           {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}>
             <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
-            <button type="button" className="dm-attach-btn" title="Send an encrypted photo" onClick={() => photoInputRef.current?.click()} disabled={!identity || busy}><Image size={19} /></button>
-            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={!identity || busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
-            <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={1000} placeholder={identity ? 'Message… (Enter to send, Shift + Enter for a new line)' : 'Unlock secure messaging to chat'} disabled={!identity || busy} />
-            <button className="button button-primary dm-send-button" disabled={busy || !composer.trim() || !identity} aria-label="Send encrypted message"><Send size={17} /></button>
+            <button type="button" className="dm-attach-btn" title="Send a photo" onClick={() => photoInputRef.current?.click()} disabled={busy}><Image size={19} /></button>
+            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
+            <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={1000} placeholder="Message… (Enter to send, Shift + Enter for a new line)" disabled={busy} />
+            <button className="button button-primary dm-send-button" disabled={busy || !composer.trim()} aria-label="Send message"><Send size={17} /></button>
           </form> : selected.requester_id === user.id
             ? <p className="dm-closed-note">Your request is waiting for @ {selected.otherUser.username} to accept. You can chat here after approval.</p>
             : <p className="dm-closed-note">This conversation stays closed until you accept the request.</p>}
@@ -1539,9 +1467,11 @@ function RightRail({ user, onCreate, onOpenProfile, onFollow, followingMap }: {
     <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 VYRA</p></div></aside>;
 }
 
-function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate }: {
+function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate, onOpenProfile, onOpenNotifications, soundEnabled, onToggleSound, darkTheme, onToggleTheme }: {
   token: string; user: User; onLogout: () => void; update: UpdateUiState;
   onCheckUpdates: () => void; onDownloadUpdate: () => void; onInstallUpdate: () => void;
+  onOpenProfile: () => void; onOpenNotifications: () => void;
+  soundEnabled: boolean; onToggleSound: () => void; darkTheme: boolean; onToggleTheme: () => void;
 }) {
   const [tracks, setTracks] = useState<any[]>([]);
   const [title, setTitle] = useState('');
@@ -1554,6 +1484,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
   const [keyId, setKeyId] = useState('');
   const [keySecret, setKeySecret] = useState('');
   const [paymentStatus, setPaymentStatus] = useState<any>(null);
+  const [activeSection, setActiveSection] = useState<'account' | 'notifications' | 'privacy' | 'creator' | 'payments' | 'app' | 'about'>('account');
   const [paymentMessage, setPaymentMessage] = useState('');
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
   useEffect(() => { callApi<{ connection: any }>('payment-status', {}, token).then(r => setPaymentStatus(r.connection)).catch(() => undefined); }, [token]);
@@ -1578,24 +1509,36 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
     } catch (e) { setMessage(e instanceof Error ? e.message : 'Could not add audio.'); }
     finally { setBusy(false); }
   }
-  return <div className="content-page settings-page"><div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings & creator tools.</h2><p>Manage your identity, audio library and account session.</p></div>
-    <div className="settings-card update-settings-card"><div className="settings-card-head"><RefreshCw /><div><h3>VYRA updates</h3><p>Find the newest release for this device whenever you check.</p></div></div>
-      <div className="update-status-row" aria-live="polite"><span className={'update-state-dot update-state-' + update.phase} /><div className="update-status-copy"><b>Installed version v{APP_VERSION}</b><p>{update.message}</p>{update.latestVersion && <small>Latest published version v{update.latestVersion}</small>}</div></div>
-      {update.phase === 'downloading' && update.progress !== undefined && <div className="update-progress" aria-label={'Download progress ' + Math.round(update.progress) + '%'}><span style={{ width: Math.max(0, Math.min(100, update.progress)) + '%' }} /></div>}
-      <div className="update-actions"><button className="button button-primary" onClick={onCheckUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}><RefreshCw size={15} /> {update.phase === 'checking' ? 'Checking…' : 'Update'}</button>
-        {update.phase === 'available' && !window.vyraDesktop && <button className="button button-soft" onClick={onDownloadUpdate}>{Capacitor.getPlatform() === 'android' ? 'Download APK' : 'Open release downloads'}</button>}
-        {update.phase === 'ready' && window.vyraDesktop && <button className="button button-primary" onClick={onInstallUpdate}>Restart & install</button>}
-      </div>
-      <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Because preview APKs are debug-signed, Android may require removing the previous preview build before installing a new one.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
-    </div>
-    <div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
+  return <div className="content-page settings-page">
+    <div className="page-intro"><p className="eyebrow">YOUR ACCOUNT, YOUR RULES</p><h2>Settings.</h2><p>Choose a section to manage your VYRA experience.</p></div>
+    <div className="settings-hub">
+      <nav className="settings-section-nav" aria-label="Settings sections">
+        <button className={activeSection === 'account' ? 'active' : ''} onClick={() => setActiveSection('account')}><UserRound /> Account</button>
+        <button className={activeSection === 'notifications' ? 'active' : ''} onClick={() => setActiveSection('notifications')}><Bell /> Notifications</button>
+        <button className={activeSection === 'privacy' ? 'active' : ''} onClick={() => setActiveSection('privacy')}><ShieldCheck /> Privacy</button>
+        <button className={activeSection === 'creator' ? 'active' : ''} onClick={() => setActiveSection('creator')}><Music2 /> Creator tools</button>
+        <button className={activeSection === 'payments' ? 'active' : ''} onClick={() => setActiveSection('payments')}><Crown /> Payments</button>
+        <button className={activeSection === 'app' ? 'active' : ''} onClick={() => setActiveSection('app')}><Settings /> App settings</button>
+        <button className={activeSection === 'about' ? 'active' : ''} onClick={() => setActiveSection('about')}><Activity /> About VYRA</button>
+      </nav>
+      <div className="settings-section-panel">
+        {activeSection === 'account' && <>
+          <div className="settings-card"><div className="settings-card-head"><Avatar user={user} size="lg" /><div><h3>@{user.username}</h3><p>{user.display_name || 'Your VYRA creator account'}</p></div></div>
+            <div className="settings-shortcut-row"><div><b>Profile</b><small>Edit your public details and creator identity.</small></div><button className="button button-soft" onClick={onOpenProfile}>Open profile</button></div>
+            <div className="settings-shortcut-row"><div><b>Sign-in account</b><small>You are signed in as @{user.username}.</small></div><span className="badge-muted">Active</span></div>
+          </div>
+          <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+        </>}
+        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place.</p></div></div><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button></div>}
+        {activeSection === 'privacy' && <div className="settings-card"><div className="settings-card-head"><ShieldCheck /><div><h3>Privacy & messages</h3><p>Understand how your content and conversations are handled.</p></div></div><div className="settings-privacy-copy"><b>Direct messages</b><p>New chats use standard VYRA message storage and are not end-to-end encrypted. Only start conversations with people you trust, and avoid sending passwords or highly sensitive information.</p><b>Older conversations</b><p>Messages created with the previous encrypted-chat system can still be restored on this device when you have their original saved key.</p><b>Message requests</b><p>New conversations begin as requests. The recipient must accept before the regular chat opens.</p></div></div>}
+        {activeSection === 'creator' && (<div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
       <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
         <label className="audio-file">AUDIO FILE<input type="file" accept="audio/mpeg,audio/mp4" onChange={e => setAudioFile(e.target.files?.[0] || null)} /></label><label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I have the rights required to upload and use this audio.</label>
         <button className="button button-primary" onClick={addTrack} disabled={busy}>{busy ? 'Adding…' : 'Add to library'}</button>{message && <p className="microcopy">{message}</p>}
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
-    </div>
-    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
+    </div>)}
+        {activeSection === 'payments' && (<div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
       {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
       <div className="settings-form">
         <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
@@ -1605,8 +1548,25 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
       </div>
       <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
+    </div>)}
+        {activeSection === 'app' && <>
+          <div className="settings-card"><div className="settings-card-head"><Settings /><div><h3>App preferences</h3><p>Personalize playback and appearance.</p></div></div>
+            <div className="settings-shortcut-row"><div><b>Video sound</b><small>Control audio across VYRA videos.</small></div><button className={'settings-toggle ' + (soundEnabled ? 'on' : '')} onClick={onToggleSound}>{soundEnabled ? 'Sound on' : 'Sound off'}</button></div>
+            <div className="settings-shortcut-row"><div><b>Dark appearance</b><small>Switch between dark and light surfaces.</small></div><button className={'settings-toggle ' + (darkTheme ? 'on' : '')} onClick={onToggleTheme}>{darkTheme ? 'Dark on' : 'Light on'}</button></div>
+          </div>
+          <div className="settings-card update-settings-card"><div className="settings-card-head"><RefreshCw /><div><h3>VYRA updates</h3><p>Find the newest release for this device whenever you check.</p></div></div>
+      <div className="update-status-row" aria-live="polite"><span className={'update-state-dot update-state-' + update.phase} /><div className="update-status-copy"><b>Installed version v{APP_VERSION}</b><p>{update.message}</p>{update.latestVersion && <small>Latest published version v{update.latestVersion}</small>}</div></div>
+      {update.phase === 'downloading' && update.progress !== undefined && <div className="update-progress" aria-label={'Download progress ' + Math.round(update.progress) + '%'}><span style={{ width: Math.max(0, Math.min(100, update.progress)) + '%' }} /></div>}
+      <div className="update-actions"><button className="button button-primary" onClick={onCheckUpdates} disabled={update.phase === 'checking' || update.phase === 'downloading'}><RefreshCw size={15} /> {update.phase === 'checking' ? 'Checking…' : 'Update'}</button>
+        {update.phase === 'available' && !window.vyraDesktop && <button className="button button-soft" onClick={onDownloadUpdate}>{Capacitor.getPlatform() === 'android' ? 'Download APK' : 'Open release downloads'}</button>}
+        {update.phase === 'ready' && window.vyraDesktop && <button className="button button-primary" onClick={onInstallUpdate}>Restart & install</button>}
+      </div>
+      <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Because preview APKs are debug-signed, Android may require removing the previous preview build before installing a new one.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
     </div>
-    <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
+        </>}
+        {activeSection === 'about' && <div className="settings-card"><div className="settings-card-head"><div className="settings-about-mark"><img src="./icon.svg" alt="" width="34" height="34" /></div><div><h3>VYRA</h3><p>Real fame. Real people.</p></div></div><div className="settings-shortcut-row"><div><b>App version</b><small>Currently installed version.</small></div><strong>v{APP_VERSION}</strong></div><p className="microcopy">Made for creators.</p></div>}
+      </div>
+    </div>
   </div>;
 }
 
@@ -1615,10 +1575,10 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [tab, setTab] = useState<Tab>('home');
   const [posts, setPosts] = useState<Post[]>([]);
   const [worldFeed, setWorldFeed] = useState<Post[]>([]);
+  const [savedPosts, setSavedPosts] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
   const [dmTarget, setDmTarget] = useState<User | null>(null);
   const [sharePost, setSharePost] = useState<Post | null>(null);
-  const [e2eeIdentity, setE2eeIdentity] = useState<E2EEIdentity | null>(null);
   const [callInfo, setCallInfo] = useState<any>(null);
   const closeCall = useCallback(() => setCallInfo(null), []);
   const [notifications, setNotifications] = useState<any[]>([]);
@@ -1633,6 +1593,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [updateState, setUpdateState] = useState<UpdateUiState>({ phase: 'idle', message: 'Tap Update to check for the newest VYRA release.' });
   const [mobileNav, setMobileNav] = useState(false);
   const pendingLikesRef = useRef(new Set<string>());
+  const pendingSavesRef = useRef(new Set<string>());
   const pendingFollowsRef = useRef(new Set<string>());
   const [followingMap, setFollowingMap] = useState<Record<string, boolean>>({});
   const [soundEnabled, setSoundEnabled] = useState(() => {
@@ -1741,6 +1702,14 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     };
   }, []);
   useEffect(() => { const handler = (e: KeyboardEvent) => { if (user.is_admin && e.ctrlKey && e.key.toLowerCase() === 'q') { e.preventDefault(); setTab('admin'); } }; window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler); }, [user.is_admin]);
+  useEffect(() => {
+    if (tab !== 'saved') return;
+    let active = true;
+    callApi<{ posts: Post[] }>('saved-posts', {}, token)
+      .then(result => { if (active) setSavedPosts(result.posts); })
+      .catch(error => { if (active) setToast(error instanceof Error ? error.message : 'Could not load saved videos.'); });
+    return () => { active = false; };
+  }, [tab, token]);
   useEffect(() => { if (tab === 'notifications') callApi<{ notifications: any[] }>('notifications', {}, token).then(r => setNotifications(r.notifications)).catch(e => setToast(e.message)); }, [tab, token]);
   useEffect(() => {
     let active = true;
@@ -1782,6 +1751,33 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       setWorldFeed(items => rankWorldFeed(apply(items, wasLiked, -delta)));
       setToast(error instanceof Error ? error.message : 'Could not update appreciation.');
     } finally { pendingLikesRef.current.delete(post.id); }
+  }, [token]);
+  const savePost = useCallback(async (post: Post) => {
+    if (pendingSavesRef.current.has(post.id)) return;
+    pendingSavesRef.current.add(post.id);
+    const wasSaved = !!post.saved;
+    const optimistic = (items: Post[], saved: boolean) => items.map(item => item.id === post.id ? { ...item, saved } : item);
+    setPosts(items => optimistic(items, !wasSaved));
+    setWorldFeed(items => optimistic(items, !wasSaved));
+    setSavedPosts(items => !wasSaved
+      ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+      : items.filter(item => item.id !== post.id));
+    try {
+      const result = await callApi<{ saved: boolean }>('save-post', { postId: post.id }, token);
+      setPosts(items => optimistic(items, result.saved));
+      setWorldFeed(items => optimistic(items, result.saved));
+      setSavedPosts(items => result.saved
+        ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+        : items.filter(item => item.id !== post.id));
+      setToast(result.saved ? 'Video saved to your collection.' : 'Removed from saved videos.');
+    } catch (error) {
+      setPosts(items => optimistic(items, wasSaved));
+      setWorldFeed(items => optimistic(items, wasSaved));
+      setSavedPosts(items => wasSaved
+        ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
+        : items.filter(item => item.id !== post.id));
+      setToast(error instanceof Error ? error.message : 'Could not update saved videos.');
+    } finally { pendingSavesRef.current.delete(post.id); }
   }, [token]);
   const comment = useCallback(async (post: Post, text: string) => {
     const content = text.trim();
@@ -1825,41 +1821,44 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       setWorldFeed(items => rankWorldFeed(items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p)));
     } catch { /* A view counter should never interrupt playback. */ }
   }, [token]);
-  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : posts, [posts, worldFeed, tab]);
+  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : tab === 'saved' ? savedPosts : posts, [posts, worldFeed, savedPosts, tab]);
   if (loading) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell" data-theme={darkTheme ? 'dark' : 'light'}><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
     <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
-      <button className={tab === 'home' ? 'active' : ''} onClick={() => { setTab('home'); setMobileNav(false); }}><Home /> Home</button>
       <button className={tab === 'reels' ? 'active' : ''} onClick={() => { setTab('reels'); setMobileNav(false); }}><Clapperboard /> Reels</button>
-      <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Compass /> World Feed</button>
+      <button className={tab === 'explore' ? 'active' : ''} onClick={() => { setTab('explore'); setMobileNav(false); }}><Film /> Videos</button>
       <button className={tab === 'messages' ? 'active' : ''} onClick={() => { setTab('messages'); setMobileNav(false); }}><MessageCircle /> Messages</button>
-      <button onClick={() => setUploadOpen(true)}><Plus /> Create <span className="nav-plus">+</span></button>
-      <button className={tab === 'notifications' ? 'active' : ''} onClick={() => { setTab('notifications'); setMobileNav(false); }}><Bell /> Notifications</button>
       <button className={tab === 'profile' ? 'active' : ''} onClick={() => { setViewProfile(null); setTab('profile'); setMobileNav(false); }}><UserRound /> Profile</button>
     </nav><div className="sidebar-bottom"><button className={tab === 'settings' ? 'active' : ''} onClick={() => setTab('settings')}><Settings /> Settings</button>{user.is_admin && <button onClick={() => setTab('admin')}><ShieldCheck /> Admin</button>}<button onClick={onLogout}><LogOut /> Log out</button><div className="sidebar-user"><Avatar user={user} size="sm" /><span><b>{user.username}</b><small>Your creator space</small></span>{user.is_verified && <VerifiedBadge />}</div></div>
   </aside>
   {mobileNav && <button className="mobile-shade" onClick={() => setMobileNav(false)} aria-label="Close menu" />}
   <main className="main-column"><header className="topbar"><button className="mobile-menu icon-button" onClick={() => setMobileNav(!mobileNav)}><Menu /></button>
-    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'World Feed' : tab === 'messages' ? 'Messages' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
+    <div className="topbar-title">{tab === 'home' ? 'Your feed' : tab === 'reels' ? 'Reels' : tab === 'explore' ? 'Videos' : tab === 'saved' ? 'Saved videos' : tab === 'messages' ? 'Messages' : tab === 'notifications' ? 'Notifications' : tab === 'settings' ? 'Settings' : tab === 'admin' ? 'Admin panel' : 'Creator profile'}<span className="live-dot" /></div>
     <div className="topbar-actions">
       <button className="global-sound-toggle" type="button" onClick={toggleSound} aria-label={soundEnabled ? 'Mute all videos' : 'Unmute all videos'} title={soundEnabled ? 'Mute all videos' : 'Unmute all videos'}><span className="global-control-icon">{soundEnabled ? <Volume2 size={17} /> : <VolumeX size={17} />}</span><span className="global-control-label">{soundEnabled ? 'Sound on' : 'Sound off'}</span></button>
       <button className={'theme-switch ' + (darkTheme ? 'is-dark' : 'is-light')} type="button" role="switch" aria-checked={darkTheme} aria-label={darkTheme ? 'Dark theme on. Switch to light theme.' : 'Dark theme off. Switch to dark theme.'} title={darkTheme ? 'Dark theme on' : 'Dark theme off'} onClick={() => setDarkTheme(value => !value)}><span className="theme-switch-icon">{darkTheme ? <Moon size={13} /> : <Sun size={13} />}</span><span className="theme-switch-track"><i /></span></button>
+      <button className="topbar-shortcut" type="button" title="Home" aria-label="Home" onClick={() => setTab('home')}><Home size={17} /></button>
+      <button className={'topbar-shortcut ' + (tab === 'saved' ? 'active' : '')} type="button" title="Saved videos" aria-label="Saved videos" onClick={() => setTab('saved')}><Bookmark size={17} /></button>
+      <button className={'topbar-shortcut ' + (tab === 'notifications' ? 'active' : '')} type="button" title="Notifications" aria-label="Notifications" onClick={() => setTab('notifications')}><Bell size={17} />{notifications.length > 0 && <i className="shortcut-dot" />}</button>
+      <button className={'topbar-shortcut ' + (tab === 'settings' ? 'active' : '')} type="button" title="Settings" aria-label="Settings" onClick={() => setTab('settings')}><Settings size={17} /></button>
+      {user.is_admin && <button className={'topbar-shortcut ' + (tab === 'admin' ? 'active' : '')} type="button" title="Admin" aria-label="Admin" onClick={() => setTab('admin')}><ShieldCheck size={17} /></button>}
       <div className="top-search"><Search size={16} /><input value={search} onChange={e => setSearch(e.target.value)} onKeyDown={e => e.key === 'Enter' && runSearch()} placeholder="Find creators" /><button onClick={runSearch}>Search</button></div><button className="create-small" onClick={() => setUploadOpen(true)}><Plus size={17} /> Create</button></div>
   </header>
   {searchResults.length > 0 && <div className="search-results">{searchResults.map(p => <button key={p.id} onClick={() => { setViewProfile(p); setTab('profile'); setSearchResults([]); }}><Avatar user={p} size="sm" /><b>@{p.username}</b>{p.is_verified && <VerifiedBadge />}<span>{p.follower_count.toLocaleString()} followers</span><small>Open profile ↗</small></button>)}</div>}
   {tab === 'home' && <div className="feed-layout"><div className="feed-column"><StoryRail stories={stories} me={user} onAdd={() => setUploadOpen(true)} onOpen={setStoryOpen} /><div className="feed-heading"><div><p className="eyebrow">A LITTLE INSPIRATION, DAILY</p><h2>Moments worth sharing.</h2></div><span>FEED / 01</span></div>
-    {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onComment={comment} onProfile={openProfile} onView={recordView} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
+    {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
   </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={openProfile} onFollow={follow} followingMap={followingMap} /></div>}
-  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} soundEnabled={soundEnabled} onLike={like} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
-  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
+  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} soundEnabled={soundEnabled} onLike={like} onSave={savePost} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
+  {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
+  {tab === 'saved' && <div className="content-page saved-videos-page"><div className="page-intro"><p className="eyebrow">YOUR PRIVATE COLLECTION</p><h2>Saved videos.</h2><p>Keep the videos you want to come back to.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(post => <PostCard key={post.id} post={post} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Bookmark size={28} /><h3>Your collection is waiting.</h3><p>Tap Save on a video to keep it here.</p><button className="button button-primary" onClick={() => setTab('explore')}>Discover videos</button></div>}</div>}
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className={'button ' + ((followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'button-soft following-button' : 'button-primary')} onClick={() => follow(viewProfile)}>{(followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'Following' : 'Follow @' + viewProfile.username}</button></div>}</div>}
-  {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onIdentityReady={setE2eeIdentity} onStartCall={setCallInfo} />}
+  {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onStartCall={setCallInfo} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
-  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} />}
+  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} onOpenProfile={() => { setViewProfile(null); setTab('profile'); }} onOpenNotifications={() => setTab('notifications')} soundEnabled={soundEnabled} onToggleSound={toggleSound} darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
   <footer className="app-footer"><span>VYRA © 2026</span><span>BUILT BY GEMAA ✦</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS</span></footer></main>
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
-  {sharePost && <ShareSheet post={sharePost} token={token} identity={e2eeIdentity} onClose={() => setSharePost(null)} onToast={setToast} />}
+  {sharePost && <ShareSheet post={sharePost} token={token} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
   {storyOpen && <div className="modal-backdrop story-viewer" onClick={() => setStoryOpen(null)}><div className="story-viewer-card" onClick={e => e.stopPropagation()}><button className="icon-button story-close" onClick={() => setStoryOpen(null)}><X /></button>{storyOpen.media_type === 'video' ? <VYRAPlayer src={storyOpen.media_url} soundEnabled={soundEnabled} onToggleSound={toggleSound} autoPlay className="story-video-player" /> : <img src={storyOpen.media_url} alt={storyOpen.caption} />}<div><b>@{storyOpen.author.username}</b><p>{storyOpen.caption}</p></div></div></div>}
   {updateReady && <div className="update-toast"><span><Activity size={18} /> A fresh VYRA update is ready.</span><button onClick={() => {

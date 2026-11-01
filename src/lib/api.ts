@@ -48,17 +48,25 @@ export async function callApi<T = any>(action: string, payload: Record<string, u
   if (!url || !key) throw new Error('VYRA is not configured. Add your Supabase URL and publishable key.');
   const headers: Record<string, string> = { 'Content-Type': 'application/json', apikey: key };
   if (token) headers.Authorization = 'Bearer ' + token;
-  const response = await fetch(apiUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ action, ...payload }),
-  });
+  let response: Response;
+  try {
+    response = await fetch(apiUrl, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ action, ...payload }),
+    });
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error('VYRA could not reach the sign-in service. Check your internet connection, then try again. If it continues, refresh the app to load the newest connection settings.');
+    }
+    throw error;
+  }
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || 'Something went wrong. Please try again.');
   return body as T;
 }
 
-export async function uploadEncryptedAttachment(
+export async function uploadChatAttachment(
   blob: Blob,
   conversationId: string,
   token: string,
@@ -72,7 +80,7 @@ export async function uploadEncryptedAttachment(
     signed.path,
     signed.uploadToken,
     blob,
-    { contentType: "application/octet-stream", upsert: false },
+    { contentType: originalMime, upsert: false },
   );
   if (error) throw new Error(error.message);
   return signed.path;

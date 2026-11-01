@@ -9,7 +9,7 @@ const PUBLISHABLE = (() => {
 const db = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 });
-const allowedOrigins = (Deno.env.get("APP_ORIGINS") || "").split(",").map((v) => v.trim()).filter(Boolean);
+const origin = "*";
 const baseHeaders = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -121,22 +121,25 @@ async function enrichPosts(rows: any[], viewerId: string) {
   if (!rows?.length) return [];
   const ids = rows.map((row) => row.id);
   const authorIds = [...new Set(rows.map((row) => row.user_id).filter(Boolean))];
-  const [likesResult, followsResult] = await Promise.all([
+  const [likesResult, followsResult, savedResult] = await Promise.all([
     db.from("likes").select("post_id").eq("user_id", viewerId).in("post_id", ids),
     authorIds.length
       ? db.from("follows").select("following_id").eq("follower_id", viewerId).in("following_id", authorIds)
       : Promise.resolve({ data: [], error: null }),
+    db.from("saved_posts").select("post_id").eq("user_id", viewerId).in("post_id", ids),
   ]);
   if (likesResult.error) throw likesResult.error;
   if (followsResult.error) throw followsResult.error;
+  if (savedResult.error) throw savedResult.error;
   const liked = new Set((likesResult.data || []).map((item: any) => item.post_id));
   const following = new Set((followsResult.data || []).map((item: any) => item.following_id));
+  const saved = new Set((savedResult.data || []).map((item: any) => item.post_id));
   return rows.map((row) => ({
     id: row.id, title: row.title || "", caption: row.caption, media_url: publicMedia(row.media_path), media_type: row.media_type,
     kind: row.kind, duration_seconds: Number(row.duration_seconds || 0), likes_count: row.likes_count || 0,
     comments_count: row.comments_count || 0, views_count: row.views_count || 0,
     created_at: row.created_at, is_world_featured: !!row.is_world_featured,
-    liked: liked.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
+    liked: liked.has(row.id), saved: saved.has(row.id), author: { ...safeUser(row.author), is_following: following.has(row.user_id) },
   }));
 }
 async function authRateLimit(req: Request) {
@@ -178,12 +181,9 @@ function mimeFamily(type: string) {
 }
 
 Deno.serve(async (req: Request) => {
-  const originHeader = req.headers.get("origin") || "";
-  const origin = allowedOrigins.length ? (allowedOrigins.includes(originHeader) ? originHeader : "") : "*";
-  if (req.method === "OPTIONS") return new Response("ok", { headers: { ...baseHeaders, "Access-Control-Allow-Origin": origin || "null" } });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: { ...baseHeaders, "Access-Control-Allow-Origin": origin } });
   if (req.method !== "POST") return fail("Use POST for API actions.", 405, origin || "null");
   if (!SUPABASE_URL || !SERVICE_KEY || !PUBLISHABLE) return fail("The FameLoop API is not configured yet.", 503, origin || "null");
-  if (allowedOrigins.length && !origin) return fail("This app origin is not allowed.", 403, "null");
   const apiKey = req.headers.get("apikey") || "";
   if (!constantTimeEqual(apiKey, PUBLISHABLE) && !constantTimeEqual(apiKey, Deno.env.get("SUPABASE_ANON_KEY") || "")) {
     return fail("Invalid application key.", 401, origin || "null");
@@ -299,6 +299,34 @@ Deno.serve(async (req: Request) => {
         .eq("user_id", owner.id).eq("status", "approved").order("created_at", { ascending: false }).limit(60);
       if (error) throw error;
       return response({ posts: await enrichPosts(rows || [], current.profile.id) }, 200, origin);
+    }
+    if (action === "saved-posts") {
+      const current = requireUser();
+      const { data: rows, error } = await db.from("saved_posts")
+        .select("post:posts!saved_posts_post_id_fkey(*,author:profiles!posts_user_id_fkey(*))")
+        .eq("user_id", current.profile.id).order("created_at", { ascending: false }).limit(100);
+      if (error) throw error;
+      const posts = (rows || []).map((item: any) => item.post).filter((post: any) => post?.status === "approved");
+      return response({ posts: (await enrichPosts(posts, current.profile.id)).map((post: any) => ({ ...post, saved: true })) }, 200, origin);
+    }
+    if (action === "save-post") {
+      const current = requireUser();
+      const postId = String(body.postId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid video to save.", 422, origin);
+      const { data: post, error: postError } = await db.from("posts").select("id,status,media_type").eq("id", postId).maybeSingle();
+      if (postError) throw postError;
+      if (!post || post.status !== "approved" || post.media_type !== "video") return fail("Only approved videos can be saved.", 404, origin);
+      const { data: existing, error: lookupError } = await db.from("saved_posts").select("post_id")
+        .eq("user_id", current.profile.id).eq("post_id", postId).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (existing) {
+        const { error } = await db.from("saved_posts").delete().eq("user_id", current.profile.id).eq("post_id", postId);
+        if (error) throw error;
+        return response({ saved: false }, 200, origin);
+      }
+      const { error } = await db.from("saved_posts").insert({ user_id: current.profile.id, post_id: postId });
+      if (error) throw error;
+      return response({ saved: true }, 201, origin);
     }
     if (action === "delete-own-post") {
       const current = requireUser();
@@ -428,7 +456,7 @@ Deno.serve(async (req: Request) => {
       const peopleById = new Map((people || []).map((person: any) => [person.id, person]));
       const ids = rows.map((row: any) => row.id);
       const { data: recentMessages, error: recentError } = await db.from("dm_messages")
-        .select("conversation_id,content,sender_id,message_type,created_at")
+        .select("conversation_id,content,sender_id,message_type,e2ee_version,created_at")
         .in("conversation_id", ids).order("created_at", { ascending: false }).limit(500);
       if (recentError) throw recentError;
       const latestByConversation = new Map<string, any>();
@@ -444,10 +472,14 @@ Deno.serve(async (req: Request) => {
           otherUser: safeUser(peopleById.get(otherId)),
           last_message: latest ? {
             ...latest,
-            preview: latest.message_type === "image" ? "🔒 Encrypted photo"
-              : latest.message_type === "voice" ? "🔒 Voice note"
-              : latest.message_type === "shared_post" ? "Shared a post"
-              : "🔒 Encrypted message",
+            preview: latest.e2ee_version === 1
+              ? latest.message_type === "image" ? "Older encrypted photo"
+                : latest.message_type === "voice" ? "Older encrypted voice note"
+                : "Older encrypted message"
+              : latest.message_type === "image" ? "Photo"
+                : latest.message_type === "voice" ? "Voice note"
+                : latest.message_type === "shared_post" ? "Shared a video"
+                : String(latest.content || "").slice(0, 100),
           } : null,
         };
       }).filter((row: any) => row.otherUser);
@@ -473,26 +505,6 @@ Deno.serve(async (req: Request) => {
       return response({ key }, 200, origin);
     }
 
-    if (action === "e2ee-key-set") {
-      const current = requireUser();
-      const publicKey = body.publicKey as Record<string, unknown> | undefined;
-      const wrappedPrivateKey = String(body.wrappedPrivateKey || "");
-      const salt = String(body.salt || "");
-      const iv = String(body.iv || "");
-      if (!publicKey || publicKey.kty !== "EC" || publicKey.crv !== "P-256"
-        || typeof publicKey.x !== "string" || typeof publicKey.y !== "string"
-        || String(publicKey.x).length > 256 || String(publicKey.y).length > 256
-        || wrappedPrivateKey.length < 40 || wrappedPrivateKey.length > 12000
-        || salt.length < 20 || salt.length > 128 || iv.length < 12 || iv.length > 64) {
-        return fail("Encrypted key data is invalid.", 422, origin);
-      }
-      const { error } = await db.from("dm_e2ee_keys").upsert({
-        user_id: current.profile.id, public_key: publicKey, wrapped_private_key: wrappedPrivateKey,
-        salt, iv, key_version: 1, updated_at: new Date().toISOString(),
-      }, { onConflict: "user_id" });
-      if (error) throw error;
-      return response({ ready: true, keyVersion: 1 }, 200, origin);
-    }
 
     if (action === "dm-start") {
       const current = requireUser();
@@ -546,8 +558,9 @@ Deno.serve(async (req: Request) => {
       const current = requireUser();
       const conversationId = String(body.conversationId || "");
       const content = String(body.content || "");
-      if (content.length < 20 || content.length > 6000 || !content.startsWith("vyra1.")) {
-        return fail("First contact must be end-to-end encrypted.", 422, origin);
+      const legacyEncrypted = content.startsWith("vyra1.");
+      if (!content.trim() || content.length > (legacyEncrypted ? 6000 : 1000)) {
+        return fail("Your first message must contain 1–1000 characters.", 422, origin);
       }
       const { data: conversation } = await db.from("dm_conversations")
         .select("id,user_a,user_b,requester_id,status")
@@ -556,20 +569,20 @@ Deno.serve(async (req: Request) => {
         return fail("Message request not found.", 404, origin);
       }
       if (conversation.status !== "pending" || conversation.requester_id !== current.profile.id) {
-        return fail("Only the request sender can add the first encrypted message.", 403, origin);
+        return fail("Only the request sender can add the first message.", 403, origin);
       }
       const { count } = await db.from("dm_messages")
         .select("id", { count: "exact", head: true }).eq("conversation_id", conversationId);
       if ((count || 0) > 0) return fail("This request already has its first message.", 409, origin);
       const { data: message, error } = await db.from("dm_messages").insert({
         conversation_id: conversationId, sender_id: current.profile.id, content,
-        message_type: "text", e2ee_version: 1,
+        message_type: "text", e2ee_version: legacyEncrypted ? 1 : 0,
       }).select("id,conversation_id,sender_id,content,message_type,created_at").single();
       if (error) throw error;
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
       await db.from("notifications").insert({
         user_id: recipientId, actor_id: current.profile.id, type: "message_request",
-        message: "@" + current.profile.username + " sent you an encrypted message request.",
+        message: "@" + current.profile.username + " sent you a message request.",
       });
       return response({ message }, 201, origin);
     }
@@ -639,7 +652,7 @@ Deno.serve(async (req: Request) => {
         ? ["image/jpeg","image/png","image/webp"]
         : messageType === "voice" ? ["audio/webm","audio/ogg","audio/mp4","audio/mpeg"] : [];
       if (!allowed.includes(mime) || !Number.isFinite(size) || size < 1 || size > 15 * 1024 * 1024) {
-        return fail("This encrypted attachment type or size is not supported.", 422, origin);
+        return fail("This attachment type or size is not supported.", 422, origin);
       }
       const { data: conversation } = await db.from("dm_conversations")
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
@@ -661,7 +674,8 @@ Deno.serve(async (req: Request) => {
       const attachmentPath = String(body.attachmentPath || "");
       const attachmentIv = String(body.attachmentIv || "");
       const attachmentMime = String(body.attachmentMime || "");
-      if (!content.startsWith("vyra1.") || content.length > 6000) return fail("Only end-to-end encrypted messages can be sent.", 422, origin);
+      const legacyEncrypted = content.startsWith("vyra1.");
+      if (!content.trim() || content.length > (legacyEncrypted ? 6000 : 1000)) return fail("Messages must contain 1–1000 characters.", 422, origin);
       if (!["text","image","voice"].includes(messageType)) return fail("Unsupported message type.", 422, origin);
       const { data: conversation } = await db.from("dm_conversations")
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
@@ -672,10 +686,10 @@ Deno.serve(async (req: Request) => {
       if (messageType === "text" && (attachmentPath || attachmentIv)) return fail("Text messages cannot contain attachment data.", 422, origin);
       if (messageType !== "text") {
         if (!attachmentPath.startsWith(current.profile.id + "/dm/" + conversationId + "/")
-          || !/^[A-Za-z0-9+/=]{12,64}$/.test(attachmentIv)
+          || (attachmentIv && !/^[A-Za-z0-9+/=]{12,64}$/.test(attachmentIv))
           || !["image/jpeg","image/png","image/webp","audio/webm","audio/ogg","audio/mp4","audio/mpeg"].includes(attachmentMime)
           || !(await storageFileExists(attachmentPath))) {
-          return fail("Encrypted attachment could not be verified.", 422, origin);
+          return fail("Attachment could not be verified.", 422, origin);
         }
       }
       const { data: message, error } = await db.from("dm_messages").insert({
@@ -683,13 +697,13 @@ Deno.serve(async (req: Request) => {
         message_type: messageType, attachment_path: messageType === "text" ? null : attachmentPath,
         attachment_iv: messageType === "text" ? null : attachmentIv,
         attachment_mime: messageType === "text" ? null : attachmentMime,
-        e2ee_version: 1,
+        e2ee_version: legacyEncrypted ? 1 : 0,
       }).select("id,conversation_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,e2ee_version,created_at").single();
       if (error) throw error;
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
       await db.from("notifications").insert({
         user_id: recipientId, actor_id: current.profile.id, type: "message",
-        message: "@" + current.profile.username + " sent you an end-to-end encrypted message.",
+        message: "@" + current.profile.username + " sent you a message.",
       });
       return response({ message: { ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null } }, 201, origin);
     }
@@ -731,7 +745,8 @@ Deno.serve(async (req: Request) => {
       const conversationId = String(body.conversationId || "");
       const postId = String(body.postId || "");
       const content = String(body.content || "");
-      if (!content.startsWith("vyra1.") || content.length > 6000) return fail("Post shares must be end-to-end encrypted.", 422, origin);
+      const legacyEncrypted = content.startsWith("vyra1.");
+      if (!content.trim() || content.length > (legacyEncrypted ? 6000 : 1000)) return fail("This share message is too long.", 422, origin);
       const { data: conversation } = await db.from("dm_conversations")
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
       if (!conversation || conversation.status !== "accepted"
@@ -740,7 +755,7 @@ Deno.serve(async (req: Request) => {
       if (!post) return fail("This post is no longer available to share.", 404, origin);
       const { data: message, error } = await db.from("dm_messages").insert({
         conversation_id: conversationId, sender_id: current.profile.id, content,
-        message_type: "shared_post", shared_post_id: postId, e2ee_version: 1,
+        message_type: "shared_post", shared_post_id: postId, e2ee_version: legacyEncrypted ? 1 : 0,
       }).select("id,conversation_id,sender_id,content,message_type,shared_post_id,e2ee_version,created_at").single();
       if (error) throw error;
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
