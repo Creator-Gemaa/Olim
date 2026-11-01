@@ -472,10 +472,14 @@ Deno.serve(async (req: Request) => {
           otherUser: safeUser(peopleById.get(otherId)),
           last_message: latest ? {
             ...latest,
-            preview: latest.message_type === "image" ? "🔒 Encrypted photo"
-              : latest.message_type === "voice" ? "🔒 Voice note"
-              : latest.message_type === "shared_post" ? "Shared a post"
-              : "🔒 Encrypted message",
+            preview: latest.e2ee_version === 1
+              ? latest.message_type === "image" ? "Older encrypted photo"
+                : latest.message_type === "voice" ? "Older encrypted voice note"
+                : "Older encrypted message"
+              : latest.message_type === "image" ? "Photo"
+                : latest.message_type === "voice" ? "Voice note"
+                : latest.message_type === "shared_post" ? "Shared a video"
+                : String(latest.content || "").slice(0, 100),
           } : null,
         };
       }).filter((row: any) => row.otherUser);
@@ -501,26 +505,6 @@ Deno.serve(async (req: Request) => {
       return response({ key }, 200, origin);
     }
 
-    if (action === "e2ee-key-set") {
-      const current = requireUser();
-      const publicKey = body.publicKey as Record<string, unknown> | undefined;
-      const wrappedPrivateKey = String(body.wrappedPrivateKey || "");
-      const salt = String(body.salt || "");
-      const iv = String(body.iv || "");
-      if (!publicKey || publicKey.kty !== "EC" || publicKey.crv !== "P-256"
-        || typeof publicKey.x !== "string" || typeof publicKey.y !== "string"
-        || String(publicKey.x).length > 256 || String(publicKey.y).length > 256
-        || wrappedPrivateKey.length < 40 || wrappedPrivateKey.length > 12000
-        || salt.length < 20 || salt.length > 128 || iv.length < 12 || iv.length > 64) {
-        return fail("Encrypted key data is invalid.", 422, origin);
-      }
-      const { error } = await db.from("dm_e2ee_keys").upsert({
-        user_id: current.profile.id, public_key: publicKey, wrapped_private_key: wrappedPrivateKey,
-        salt, iv, key_version: 1, updated_at: new Date().toISOString(),
-      }, { onConflict: "user_id" });
-      if (error) throw error;
-      return response({ ready: true, keyVersion: 1 }, 200, origin);
-    }
 
     if (action === "dm-start") {
       const current = requireUser();
