@@ -268,7 +268,7 @@ const PostCard = memo(function PostCard({ post, token, onLike, onSave, onComment
   return <article className="post-card">
     <div className="post-head"><button className="post-author" onClick={() => onProfile(post.author)}><Avatar user={post.author} /><span><b>{post.author.username} {post.author.is_verified && <VerifiedBadge />}</b><small>{ago(post.created_at)} {post.is_world_featured && ' · World spotlight'}</small></span></button><button className="icon-button" aria-label="More options"><ChevronDown size={18} /></button></div>
     <div className="post-media">{post.media_type === 'video' ? <VYRAPlayer src={post.media_url} soundEnabled={soundEnabled} onToggleSound={onToggleSound} className="post-video-player" onDoubleTap={() => { if (!post.liked) onLike(post); }} onPlay={() => { if (!hasCountedView.current) { hasCountedView.current = true; onView?.(post.id); } }} /> : <img src={post.media_url} alt={post.caption || 'Creator post'} loading="lazy" />}{post.kind === 'reel' && <span className="media-label"><Clapperboard size={13} /> REEL</span>}{post.kind === 'video' && <span className="media-label"><Film size={13} /> VIDEO</span>}</div>
-    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div><button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save post'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button></div>
+    <div className="post-actions"><div><button className={'action-button ' + (post.liked ? 'liked' : '')} onClick={() => onLike(post)} aria-label={post.liked ? 'Unlike' : 'Like'} aria-pressed={post.liked}><Heart size={22} fill={post.liked ? 'currentColor' : 'none'} /></button><button className="action-button" onClick={() => setShowComments(!showComments)} aria-label="Comment"><MessageCircle size={21} /></button></div>{post.media_type === 'video' && <button className={'action-button save-action ' + (post.saved ? 'is-saved' : '')} onClick={() => onSave(post)} aria-label={post.saved ? 'Remove from saved' : 'Save video'} aria-pressed={!!post.saved}><Bookmark size={20} fill={post.saved ? 'currentColor' : 'none'} /></button>}</div>
     <div className="post-meta"><b>{post.likes_count.toLocaleString()} appreciations{post.media_type === 'video' ? ' · ' + (post.views_count || 0).toLocaleString() + ' views' : ''}</b>{post.title && <h3 className="post-title">{post.title}</h3>}<p><strong>{post.author.username}</strong> {post.caption}</p><button className="comment-link" onClick={() => setShowComments(!showComments)}>View all {post.comments_count} comments</button></div>
     {showComments && <><div className="comments-list">{commentsLoading ? <small>Loading comments…</small> : comments.map(item => <p className="comment-enter" key={item.id}><b>@{item.author?.username || 'creator'}</b> {item.content}</p>)}</div><form className="comment-form" onSubmit={submitComment}><input value={comment} onChange={e => setComment(e.target.value)} placeholder="Add something kind…" maxLength={1000} /><button disabled={!comment.trim() || commentBusy}>{commentBusy ? 'Sending…' : 'Post'}</button></form></>}
   </article>;
@@ -1034,14 +1034,14 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
   }
 
   async function getPeerPublicKey(peer: User): Promise<JsonWebKey> {
-    if (!identity) throw new Error('Unlock secure messaging first.');
+    if (!identity) throw new Error('Restore the older encrypted conversation first.');
     const result = await callApi<{ key: { publicKey: JsonWebKey } | null }>('e2ee-key-get', { username: peer.username }, token);
-    if (!result.key?.publicKey) throw new Error('@' + peer.username + ' needs to enable secure messaging before you can chat.');
+    if (!result.key?.publicKey) throw new Error('The older conversation cannot be restored without @' + peer.username + '’s original key.');
     return result.key.publicKey;
   }
 
   async function getConversationKey(conversation: DMConversation): Promise<CryptoKey> {
-    if (!identity) throw new Error('Unlock secure messaging first.');
+    if (!identity) throw new Error('Restore the older encrypted conversation first.');
     const cached = peerKeyCache.current.get(conversation.id);
     if (cached) return cached;
     const publicKey = await getPeerPublicKey(conversation.otherUser);
