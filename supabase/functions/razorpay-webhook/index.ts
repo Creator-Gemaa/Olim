@@ -49,8 +49,7 @@ Deno.serve(async (request: Request) => {
     const creatorId = new URL(request.url).searchParams.get("creator") || "";
     if (!/^[0-9a-f-]{36}$/i.test(creatorId)) return new Response("Invalid creator", { status: 400 });
 
-    // Verify Razorpay's signature against the original request bytes. Do not
-    // parse and re-serialize JSON before checking the HMAC.
+    // Verify the original HTTP bytes with the webhook secret before parsing JSON.
     const rawBody = new Uint8Array(await request.arrayBuffer());
     if (rawBody.length === 0 || rawBody.length > 1024 * 1024) return new Response("Invalid payload size", { status: 413 });
     const signature = request.headers.get("x-razorpay-signature") || "";
@@ -83,8 +82,8 @@ Deno.serve(async (request: Request) => {
     if (storedError) throw storedError;
     if (!storedSubscription) return new Response("Subscription record not found", { status: 404 });
 
-    // Ask Razorpay for the subscription's current status. This makes the
-    // handler resilient to duplicate and out-of-order webhook deliveries.
+    // Reconcile with Razorpay's current object so out-of-order events cannot
+    // roll a subscription back to an older state.
     const remoteResponse = await fetch("https://api.razorpay.com/v1/subscriptions/" + encodeURIComponent(subscriptionId), {
       headers: { Authorization: "Basic " + btoa(credentials.keyId + ":" + credentials.keySecret) },
       signal: AbortSignal.timeout(10000),
@@ -96,22 +95,17 @@ Deno.serve(async (request: Request) => {
     if (!allowedStatuses.has(status)) return new Response("Unknown subscription status", { status: 409 });
 
     const payloadHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)));
-    const startAt = isoFromUnix(remote.current_start);
-    const endAt = isoFromUnix(remote.current_end);
     const { error: updateError } = await db.from("subscriptions").update({
       status: status === "created" || status === "authenticated" ? "pending" : status,
-      current_start_at: startAt,
-      current_end_at: endAt,
+      current_start_at: isoFromUnix(remote.current_start),
+      current_end_at: isoFromUnix(remote.current_end),
       updated_at: new Date().toISOString(),
     }).eq("id", storedSubscription.id).eq("creator_id", creatorId);
     if (updateError) throw updateError;
 
     const { error: eventError } = await db.from("razorpay_webhook_events").upsert({
-      provider_event_id: eventId,
-      creator_id: creatorId,
-      event_type: eventType,
-      payload_hash: payloadHash,
-      processed_at: new Date().toISOString(),
+      provider_event_id: eventId, creator_id: creatorId, event_type: eventType,
+      payload_hash: payloadHash, processed_at: new Date().toISOString(),
     }, { onConflict: "provider_event_id", ignoreDuplicates: true });
     if (eventError) throw eventError;
     return new Response(JSON.stringify({ ok: true }), {
