@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from 'react';
 import { Browser } from '@capacitor/browser';
 import { Capacitor } from '@capacitor/core';
+import { LocalNotifications } from '@capacitor/local-notifications';
 import { APP_VERSION, checkLatestUpdate } from './lib/updates';
 import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
@@ -187,7 +188,7 @@ function Welcome({ onAuth }: { onAuth: (user: User, token: string) => void }) {
         <p className="eyebrow">YOUR NEXT CHAPTER STARTS HERE</p><h1>Make it.<br /><em>Share it.</em><br />Be remembered.</h1>
         <p className="auth-subtitle">A space for the things you make, the people who find them, and the moments that stay.</p>
         <div className="auth-mantra"><span>✦</span> Real fame. Real people. Your moment.</div>
-      </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>BUILT BY GEMAA ✦</span><span>01 — 04</span></div>
+      </div><div className="auth-art-bottom"><span>CREATIVITY HAS NO CEILING</span><span>PUBLISHED BY GEMAA LIMITED</span><span>01 — 04</span></div>
     </section>
     <section className="auth-panel"><div className="auth-panel-inner">
       <div className="mobile-brand brand"><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</div>
@@ -788,7 +789,93 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   </div>;
 }
 
-function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShare, token, soundEnabled }: {
+
+function MobilePermissionsPrompt({ onClose }: { onClose: () => void }) {
+  type PermissionState = 'prompt' | 'granted' | 'denied' | 'unavailable';
+  const [microphone, setMicrophone] = useState<PermissionState>('prompt');
+  const [notifications, setNotifications] = useState<PermissionState>('prompt');
+  const [busy, setBusy] = useState<'microphone' | 'notifications' | null>(null);
+
+  useEffect(() => {
+    if (navigator.permissions?.query) {
+      navigator.permissions.query({ name: 'microphone' as PermissionName })
+        .then(result => setMicrophone(result.state === 'granted' ? 'granted' : result.state === 'denied' ? 'denied' : 'prompt'))
+        .catch(() => undefined);
+    }
+    if (Capacitor.isNativePlatform()) {
+      LocalNotifications.checkPermissions()
+        .then(result => setNotifications(result.display === 'granted' ? 'granted' : result.display === 'denied' ? 'denied' : 'prompt'))
+        .catch(() => setNotifications('unavailable'));
+    } else if ('Notification' in window) {
+      setNotifications(Notification.permission === 'granted' ? 'granted' : Notification.permission === 'denied' ? 'denied' : 'prompt');
+    } else {
+      setNotifications('unavailable');
+    }
+  }, []);
+
+  async function requestMicrophone() {
+    setBusy('microphone');
+    try {
+      if (!navigator.mediaDevices?.getUserMedia) {
+        setMicrophone('unavailable');
+        return;
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop());
+      setMicrophone('granted');
+    } catch {
+      setMicrophone('denied');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function requestNotifications() {
+    setBusy('notifications');
+    try {
+      if (Capacitor.isNativePlatform()) {
+        const result = await LocalNotifications.requestPermissions();
+        setNotifications(result.display === 'granted' ? 'granted' : result.display === 'denied' ? 'denied' : 'prompt');
+      } else if ('Notification' in window) {
+        const result = await Notification.requestPermission();
+        setNotifications(result === 'granted' ? 'granted' : result === 'denied' ? 'denied' : 'prompt');
+      } else {
+        setNotifications('unavailable');
+      }
+    } catch {
+      setNotifications('denied');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const statusLabel = (status: PermissionState) => status === 'granted'
+    ? 'Allowed' : status === 'denied' ? 'Blocked — change this in device settings'
+    : status === 'unavailable' ? 'Not supported on this device' : 'Not requested yet';
+
+  return <div className="modal-backdrop mobile-permissions-backdrop">
+    <section className="mobile-permissions-card" role="dialog" aria-modal="true" aria-labelledby="mobile-permissions-title">
+      <div className="mobile-permissions-icon"><ShieldCheck size={25} /></div>
+      <p className="eyebrow">A BETTER MOBILE EXPERIENCE</p>
+      <h2 id="mobile-permissions-title">Set up VYRA permissions.</h2>
+      <p className="mobile-permissions-copy">Microphone access enables voice calls and voice messages. Notifications allow this device to show VYRA alerts.</p>
+      <div className="mobile-permission-row">
+        <span className="mobile-permission-symbol"><Mic size={19} /></span>
+        <span><b>Microphone</b><small>{statusLabel(microphone)}</small></span>
+        <button className="button button-soft" type="button" disabled={busy !== null || microphone === 'granted'} onClick={() => void requestMicrophone()}>{microphone === 'granted' ? 'Allowed' : busy === 'microphone' ? 'Requesting…' : 'Allow'}</button>
+      </div>
+      <div className="mobile-permission-row">
+        <span className="mobile-permission-symbol"><Bell size={19} /></span>
+        <span><b>Notifications</b><small>{statusLabel(notifications)}</small></span>
+        <button className="button button-soft" type="button" disabled={busy !== null || notifications === 'granted' || notifications === 'unavailable'} onClick={() => void requestNotifications()}>{notifications === 'granted' ? 'Allowed' : busy === 'notifications' ? 'Requesting…' : 'Allow'}</button>
+      </div>
+      <p className="microcopy">You can change these permissions later in your device settings. In-app notifications remain available even when device notifications are off.</p>
+      <button className="button button-primary button-wide" type="button" disabled={busy !== null} onClick={onClose}>Continue to VYRA</button>
+    </section>
+  </div>;
+}
+
+function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShare, token, soundEnabled, userId }: {
   posts: Post[];
   onLike: (post: Post) => void;
   onSave: (post: Post) => void;
@@ -798,11 +885,89 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
   onShare: (post: Post) => void;
   token: string;
   soundEnabled: boolean;
+  userId: string;
 }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const countedRef = useRef<Set<string>>(new Set());
+  const resumedProgressRef = useRef<{ postId: string; currentTime: number } | null>(null);
+  const progressStorageKey = 'vyra-reels-progress:' + userId;
   const [commentPost, setCommentPost] = useState<Post | null>(null);
   const postIdSignature = posts.map(post => post.id).join('|');
+
+  useLayoutEffect(() => {
+    const root = scrollerRef.current;
+    if (!root) return;
+    let progress: { postId?: string; currentTime?: number; index?: number } | null = null;
+    try {
+      const raw = localStorage.getItem(progressStorageKey);
+      if (raw) progress = JSON.parse(raw);
+    } catch { progress = null; }
+    if (!progress) return;
+    const videos = Array.from(root.querySelectorAll<HTMLVideoElement>('video[data-post-id]'));
+    const matchingVideo = progress.postId ? videos.find(video => video.dataset.postId === progress?.postId) : undefined;
+    const cards = Array.from(root.querySelectorAll<HTMLElement>('.reel-screen'));
+    const matchingCard = (matchingVideo?.closest('.reel-screen') as HTMLElement | null)
+      || (Number.isInteger(progress.index) ? cards[Math.max(0, Math.min(cards.length - 1, Number(progress.index)))] : undefined);
+    if (!matchingCard) return;
+    root.scrollTop += matchingCard.getBoundingClientRect().top - root.getBoundingClientRect().top;
+    if (matchingVideo && Number(progress.currentTime) > 0) {
+      const savedTime = Number(progress.currentTime);
+      resumedProgressRef.current = { postId: matchingVideo.dataset.postId || '', currentTime: savedTime };
+      const seekToSavedTime = () => {
+        if (Number.isFinite(matchingVideo.duration) && matchingVideo.duration > 0) {
+          matchingVideo.currentTime = Math.min(savedTime, Math.max(0, matchingVideo.duration - 0.05));
+        }
+      };
+      if (matchingVideo.readyState >= 1) seekToSavedTime();
+      else matchingVideo.addEventListener('loadedmetadata', seekToSavedTime, { once: true });
+    }
+  }, [postIdSignature, progressStorageKey]);
+
+  useEffect(() => {
+    const root = scrollerRef.current;
+    if (!root) return;
+    let lastSavedAt = 0;
+    const saveProgress = (force = false) => {
+      const cards = Array.from(root.querySelectorAll<HTMLElement>('.reel-screen'));
+      if (!cards.length) return;
+      const center = root.getBoundingClientRect().top + root.clientHeight / 2;
+      let activeIndex = 0;
+      let activeDistance = Number.POSITIVE_INFINITY;
+      cards.forEach((card, index) => {
+        const rect = card.getBoundingClientRect();
+        const distance = Math.abs((rect.top + rect.bottom) / 2 - center);
+        if (distance < activeDistance) { activeDistance = distance; activeIndex = index; }
+      });
+      const video = cards[activeIndex].querySelector<HTMLVideoElement>('video[data-post-id]');
+      const postId = video?.dataset.postId;
+      if (!video || !postId) return;
+      const currentTime = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+      const resumed = resumedProgressRef.current;
+      if (resumed?.postId === postId && currentTime < resumed.currentTime - 0.5) return;
+      const now = Date.now();
+      if (!force && now - lastSavedAt < 900) return;
+      try {
+        localStorage.setItem(progressStorageKey, JSON.stringify({ postId, currentTime, index: activeIndex, updatedAt: now }));
+        lastSavedAt = now;
+      } catch { /* Local storage may be disabled or full. */ }
+    };
+    const onScroll = () => saveProgress();
+    const onTimeUpdate = () => saveProgress();
+    const onPageHide = () => saveProgress(true);
+    const onVisibilityChange = () => { if (document.hidden) saveProgress(true); };
+    root.addEventListener('scroll', onScroll, { passive: true });
+    root.addEventListener('timeupdate', onTimeUpdate, true);
+    window.addEventListener('pagehide', onPageHide);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      saveProgress(true);
+      root.removeEventListener('scroll', onScroll);
+      root.removeEventListener('timeupdate', onTimeUpdate, true);
+      window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [postIdSignature, progressStorageKey]);
+
   useEffect(() => {
     const root = scrollerRef.current;
     if (!root) return;
@@ -1467,10 +1632,10 @@ function RightRail({ user, onCreate, onOpenProfile, onFollow, followingMap }: {
     <div className="rail-foot"><span>ABOUT</span><span>COMMUNITY</span><span>PRIVACY</span><span>HELP</span><p>© 2026 VYRA</p></div></aside>;
 }
 
-function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate, onOpenProfile, onOpenNotifications, soundEnabled, onToggleSound, darkTheme, onToggleTheme }: {
+function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloadUpdate, onInstallUpdate, onOpenProfile, onOpenNotifications, onRequestPermissions, soundEnabled, onToggleSound, darkTheme, onToggleTheme }: {
   token: string; user: User; onLogout: () => void; update: UpdateUiState;
   onCheckUpdates: () => void; onDownloadUpdate: () => void; onInstallUpdate: () => void;
-  onOpenProfile: () => void; onOpenNotifications: () => void;
+  onOpenProfile: () => void; onOpenNotifications: () => void; onRequestPermissions: () => void;
   soundEnabled: boolean; onToggleSound: () => void; darkTheme: boolean; onToggleTheme: () => void;
 }) {
   const [tracks, setTracks] = useState<any[]>([]);
@@ -1529,7 +1694,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
           </div>
           <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
         </>}
-        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place.</p></div></div><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button></div>}
+        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place. Device alerts can be enabled separately.</p></div></div><div className="settings-actions"><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button><button className="button button-soft" onClick={onRequestPermissions}>Manage device permissions</button></div></div>}
         {activeSection === 'privacy' && <div className="settings-card"><div className="settings-card-head"><ShieldCheck /><div><h3>Privacy & messages</h3><p>Understand how your content and conversations are handled.</p></div></div><div className="settings-privacy-copy"><b>Direct messages</b><p>New chats use standard VYRA message storage and are not end-to-end encrypted. Only start conversations with people you trust, and avoid sending passwords or highly sensitive information.</p><b>Older conversations</b><p>Messages created with the previous encrypted-chat system can still be restored on this device when you have their original saved key.</p><b>Message requests</b><p>New conversations begin as requests. The recipient must accept before the regular chat opens.</p></div></div>}
         {activeSection === 'creator' && (<div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
       <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
@@ -1564,7 +1729,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       <p className="microcopy update-platform-note">{Capacitor.getPlatform() === 'android' ? 'Android will ask you to approve the APK installation. Because preview APKs are debug-signed, Android may require removing the previous preview build before installing a new one.' : window.vyraDesktop ? 'Windows downloads available updates automatically. Restart VYRA to finish installing.' : 'The web version opens the official VYRA release page for downloads.'}</p>
     </div>
         </>}
-        {activeSection === 'about' && <div className="settings-card"><div className="settings-card-head"><div className="settings-about-mark"><img src="./icon.svg" alt="" width="34" height="34" /></div><div><h3>VYRA</h3><p>Real fame. Real people.</p></div></div><div className="settings-shortcut-row"><div><b>App version</b><small>Currently installed version.</small></div><strong>v{APP_VERSION}</strong></div><p className="microcopy">Made for creators.</p></div>}
+        {activeSection === 'about' && <div className="settings-card"><div className="settings-card-head"><div className="settings-about-mark"><img src="./icon.svg" alt="" width="34" height="34" /></div><div><h3>VYRA</h3><p>Real fame. Real people.</p></div></div><div className="settings-shortcut-row"><div><b>App version</b><small>Currently installed version.</small></div><strong>v{APP_VERSION}</strong></div><p className="microcopy">Published by Gemaa Limited.</p></div>}
       </div>
     </div>
   </div>;
@@ -1575,6 +1740,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [tab, setTab] = useState<Tab>('home');
   const [posts, setPosts] = useState<Post[]>([]);
   const [worldFeed, setWorldFeed] = useState<Post[]>([]);
+  const [reelsFeed, setReelsFeed] = useState<Post[]>([]);
   const [savedPosts, setSavedPosts] = useState<Post[]>([]);
   const [stories, setStories] = useState<Story[]>([]);
   const [dmTarget, setDmTarget] = useState<User | null>(null);
@@ -1592,6 +1758,12 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const [updateReady, setUpdateReady] = useState(false);
   const [updateState, setUpdateState] = useState<UpdateUiState>({ phase: 'idle', message: 'Tap Update to check for the newest VYRA release.' });
   const [mobileNav, setMobileNav] = useState(false);
+  const [permissionsOpen, setPermissionsOpen] = useState(() => {
+    try {
+      const mobile = Capacitor.isNativePlatform() || window.matchMedia('(max-width: 820px)').matches;
+      return mobile && localStorage.getItem('vyra-mobile-permissions-seen:' + startUser.id) !== 'true';
+    } catch { return Capacitor.isNativePlatform(); }
+  });
   const pendingLikesRef = useRef(new Set<string>());
   const pendingSavesRef = useRef(new Set<string>());
   const pendingFollowsRef = useRef(new Set<string>());
@@ -1663,8 +1835,8 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   const toggleSound = useCallback(() => setSoundEnabled(value => !value), []);
   const openProfile = useCallback((profile: User) => { setViewProfile(profile); setTab('profile'); }, []);
   const loadFeed = useCallback(async () => {
-    const r = await callApi<{ posts: Post[]; stories: Story[]; worldFeed: Post[] }>('feed', {}, token);
-    setPosts(r.posts); setStories(r.stories); setWorldFeed(r.worldFeed || []);
+    const r = await callApi<{ posts: Post[]; stories: Story[]; worldFeed: Post[]; reels?: Post[] }>('feed', {}, token);
+    setPosts(r.posts); setStories(r.stories); setWorldFeed(r.worldFeed || []); setReelsFeed(r.reels || []);
   }, [token]);
   useEffect(() => { Promise.all([refreshUser(), loadFeed()]).catch(e => setToast(e.message)).finally(() => setLoading(false)); }, [refreshUser, loadFeed]);
   useEffect(() => {
@@ -1819,9 +1991,10 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       const result = await callApi<{ views_count: number }>('record-view', { postId }, token);
       setPosts(items => items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p));
       setWorldFeed(items => rankWorldFeed(items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p)));
+      setReelsFeed(items => items.map(p => p.id === postId ? { ...p, views_count: result.views_count } : p));
     } catch { /* A view counter should never interrupt playback. */ }
   }, [token]);
-  const displayed = useMemo(() => tab === 'reels' ? posts.filter(p => p.kind === 'reel') : tab === 'explore' ? worldFeed : tab === 'saved' ? savedPosts : posts, [posts, worldFeed, savedPosts, tab]);
+  const displayed = useMemo(() => tab === 'reels' ? reelsFeed : tab === 'explore' ? worldFeed : tab === 'saved' ? savedPosts : posts, [posts, reelsFeed, worldFeed, savedPosts, tab]);
   if (loading) return <div className="loading-screen"><div className="loading-mark"><img src="./icon.svg" alt="VYRA" /></div><p>Preparing your stage…</p></div>;
   return <div className="app-shell" data-theme={darkTheme ? 'dark' : 'light'}><aside className={'sidebar ' + (mobileNav ? 'sidebar-open' : '')}>
     <button className="brand sidebar-brand" onClick={() => setTab('home')}><span className="brand-mark"><img src="./icon.svg" alt="" /></span> VYRA</button><div className="side-label">YOUR SPACE</div><nav className="side-nav">
@@ -1848,15 +2021,19 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
   {tab === 'home' && <div className="feed-layout"><div className="feed-column"><StoryRail stories={stories} me={user} onAdd={() => setUploadOpen(true)} onOpen={setStoryOpen} /><div className="feed-heading"><div><p className="eyebrow">A LITTLE INSPIRATION, DAILY</p><h2>Moments worth sharing.</h2></div><span>FEED / 01</span></div>
     {displayed.length ? displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />) : <div className="empty-card"><div className="empty-icon"><Sparkles /></div><p className="eyebrow">THE STAGE IS YOURS</p><h3>Your feed is a blank canvas.</h3><p>Share the first moment, or discover creators who inspire you. Approved posts from the community will appear here.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}><Plus size={16} /> Create your first post</button></div>}
   </div><RightRail user={user} onCreate={() => setUploadOpen(true)} onOpenProfile={openProfile} onFollow={follow} followingMap={followingMap} /></div>}
-  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Swipe vertically through creator videos. Videos play when they are in view.</p></div><ReelsFeed posts={displayed} soundEnabled={soundEnabled} onLike={like} onSave={savePost} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
+  {tab === 'reels' && <div className="content-page reels-page"><div className="page-intro"><p className="eyebrow">SHORT FORM, BIG ENERGY</p><h2>Reels that make you pause.</h2><p>Your feed is shuffled for discovery, with more videos from creators whose Reels you have liked.</p></div><ReelsFeed posts={displayed} userId={user.id} soundEnabled={soundEnabled} onLike={like} onSave={savePost} onProfile={openProfile} onView={recordView} onComment={comment} onShare={setSharePost} token={token} /></div>}
   {tab === 'explore' && <div className="content-page"><div className="page-intro"><p className="eyebrow">A NEW DAY, A NEW DISCOVERY</p><h2>Today’s World Feed.</h2><p>Every new video joins automatically. Upload order starts the day; views, appreciations and comments move the ranking. Resets at midnight IST.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(p => <PostCard key={p.id} post={p} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Compass /><h3>Today’s World Feed is ready for its first video.</h3><p>Upload a video and it will appear here immediately. The feed starts fresh at midnight IST.</p><button className="button button-primary" onClick={() => setUploadOpen(true)}>Publish a video</button></div>}</div>}
   {tab === 'saved' && <div className="content-page saved-videos-page"><div className="page-intro"><p className="eyebrow">YOUR PRIVATE COLLECTION</p><h2>Saved videos.</h2><p>Keep the videos you want to come back to.</p></div>{displayed.length ? <div className="world-feed-list">{displayed.map(post => <PostCard key={post.id} post={post} token={token} soundEnabled={soundEnabled} onToggleSound={toggleSound} onLike={like} onSave={savePost} onComment={comment} onProfile={openProfile} onView={recordView} />)}</div> : <div className="empty-card"><Bookmark size={28} /><h3>Your collection is waiting.</h3><p>Tap Save on a video to keep it here.</p><button className="button button-primary" onClick={() => setTab('explore')}>Discover videos</button></div>}</div>}
   {tab === 'profile' && <div className="content-page"><ProfileView profile={viewProfile || user} own={!viewProfile || viewProfile.id === user.id} token={token} onRefresh={() => { refreshUser().then(() => loadFeed()); }} />{viewProfile && viewProfile.id !== user.id && <div className="profile-actions"><button className="button button-soft" onClick={() => { setDmTarget(viewProfile); setTab('messages'); }}><MessageCircle size={16} /> Message</button><button className={'button ' + ((followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'button-soft following-button' : 'button-primary')} onClick={() => follow(viewProfile)}>{(followingMap[viewProfile.id] ?? !!viewProfile.is_following) ? 'Following' : 'Follow @' + viewProfile.username}</button></div>}</div>}
   {tab === 'messages' && <DirectMessages token={token} user={user} target={dmTarget} onClearTarget={() => setDmTarget(null)} onToast={setToast} onStartCall={setCallInfo} />}
   {tab === 'notifications' && <div className="content-page"><div className="page-intro"><p className="eyebrow">GOOD THINGS HAPPEN HERE</p><h2>Your notifications.</h2><p>Follows, appreciations and creator milestones.</p></div>{notifications.length ? notifications.map(n => <div className="notification-row" key={n.id}><span className="notification-icon"><Bell size={17} /></span><div><b>{n.message}</b><small>{ago(n.created_at)}</small></div></div>) : <div className="empty-card"><Bell /><h3>It's quiet for now.</h3><p>We'll let you know when something happens.</p></div>}</div>}
-  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} onOpenProfile={() => { setViewProfile(null); setTab('profile'); }} onOpenNotifications={() => setTab('notifications')} soundEnabled={soundEnabled} onToggleSound={toggleSound} darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} />}
+  {tab === 'settings' && <SettingsPage token={token} user={user} onLogout={onLogout} update={updateState} onCheckUpdates={checkUpdates} onDownloadUpdate={downloadUpdate} onInstallUpdate={installUpdate} onOpenProfile={() => { setViewProfile(null); setTab('profile'); }} onOpenNotifications={() => setTab('notifications')} onRequestPermissions={() => setPermissionsOpen(true)} soundEnabled={soundEnabled} onToggleSound={toggleSound} darkTheme={darkTheme} onToggleTheme={() => setDarkTheme(value => !value)} />}
   {tab === 'admin' && user.is_admin && <AdminPanel token={token} onClose={() => setTab('home')} />}
-  <footer className="app-footer"><span>VYRA © 2026</span><span>BUILT BY GEMAA ✦</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS</span></footer></main>
+  <footer className="app-footer"><span>VYRA © 2026</span><span>PUBLISHED BY GEMAA LIMITED</span><span>REAL FAME. REAL PEOPLE.</span><span>MADE FOR CREATORS</span></footer></main>
+  {permissionsOpen && <MobilePermissionsPrompt onClose={() => {
+    try { localStorage.setItem('vyra-mobile-permissions-seen:' + user.id, 'true'); } catch { /* Local storage may be unavailable. */ }
+    setPermissionsOpen(false);
+  }} />}
   {uploadOpen && <UploadModal token={token} onClose={() => setUploadOpen(false)} onDone={() => loadFeed()} />}
   {sharePost && <ShareSheet post={sharePost} token={token} onClose={() => setSharePost(null)} onToast={setToast} />}
   {callInfo && <CallOverlay call={callInfo} user={user} token={token} onClose={closeCall} onToast={setToast} />}
