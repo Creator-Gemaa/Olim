@@ -611,7 +611,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
         localStreamRef.current = stream;
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
         let iceServers: RTCIceServer[] = [
-          { urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+          { urls: ['stun:stun.l.google.com:19302'] },
         ];
         try {
           const iceConfig = await callApi<{ iceServers?: RTCIceServer[] }>('dm-call-ice-config', {}, token);
