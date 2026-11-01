@@ -955,3 +955,30 @@ button:focus-visible,input:focus-visible,textarea:focus-visible{outline:2px soli
  .vyra-player-time{font-size:9px}
 }
 @media(prefers-reduced-motion:reduce){.reel-heart-burst,.reel-heart-burst:before,.reel-heart-burst svg{animation:none!important;opacity:0!important}}
+
+/* Light theme counterparts for the refreshed panels */
+.app-shell[data-theme="light"] .topbar-shortcut{background:#f7f8fb;border-color:#e3e6ed;color:#4d5665}
+.app-shell[data-theme="light"] .topbar-shortcut:hover,.app-shell[data-theme="light"] .topbar-shortcut.active{background:#f0eaff;border-color:#d8c8ff;color:#6547b4}
+.app-shell[data-theme="light"] .topbar-shortcut .shortcut-dot{border-color:#fff}
+.app-shell[data-theme="light"] .settings-section-nav{background:#fff;border-color:#e5e7ed}
+.app-shell[data-theme="light"] .settings-section-nav button{color:#667080}
+.app-shell[data-theme="light"] .settings-section-nav button.active,.app-shell[data-theme="light"] .settings-section-nav button:hover{background:#f1edff;color:#6247ad}
+.app-shell[data-theme="light"] .settings-shortcut-row{border-color:#e7e9ef}
+.app-shell[data-theme="light"] .settings-shortcut-row b{color:#28313e}
+.app-shell[data-theme="light"] .settings-shortcut-row small{color:#748090}
+.app-shell[data-theme="light"] .settings-toggle{background:#f4f5f8;border-color:#dfe3ea;color:#364050}
+.app-shell[data-theme="light"] .settings-toggle.on{background:#eee8ff;border-color:#d5c7ff;color:#5b41a4}
+.app-shell[data-theme="light"] .settings-privacy-copy{color:#465161}
+.app-shell[data-theme="light"] .dm-inbox-search{background:#f5f6fa;border-color:#e1e4eb}
+.app-shell[data-theme="light"] .dm-inbox-search input{color:#27313e}
+.app-shell[data-theme="light"] .dm-list-copy b{color:#26313e}
+.app-shell[data-theme="light"] .dm-list-copy small,.app-shell[data-theme="light"] .dm-list-time{color:#738092}
+.app-shell[data-theme="light"] .dm-bubble{background:#f0f1f6;border-color:#e2e4eb;color:#27313e}
+.app-shell[data-theme="light"] .dm-bubble p{color:#27313e}
+.app-shell[data-theme="light"] .dm-bubble small{color:#738092}
+.app-shell[data-theme="light"] .dm-bubble-row.mine .dm-bubble{background:linear-gradient(145deg,#765ed0,#6550b2);color:#fff}
+.app-shell[data-theme="light"] .dm-bubble-row.mine .dm-bubble p,.app-shell[data-theme="light"] .dm-bubble-row.mine .dm-bubble small{color:#fff}
+.app-shell[data-theme="light"] .legacy-restore-card,.app-shell[data-theme="light"] .legacy-restore-note{background:#fff8e8;border-color:#ead8aa}
+.app-shell[data-theme="light"] .legacy-restore-card b{color:#654d24}
+.app-shell[data-theme="light"] .legacy-restore-card small,.app-shell[data-theme="light"] .legacy-restore-note{color:#806835}
+.app-shell[data-theme="light"] .legacy-restore-card input{background:#fff;color:#29313d;border-color:#e2d8c2}
