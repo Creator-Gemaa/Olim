@@ -760,10 +760,17 @@ Deno.serve(async (req: Request) => {
         .select("id,group_id,sender_id,content,message_type,attachment_path,attachment_iv,attachment_mime,created_at,sender:profiles!dm_group_messages_sender_id_fkey(*)")
         .eq("group_id", groupId).order("created_at", { ascending: true }).limit(200);
       if (error) throw error;
-      return response({ messages: (data || []).map((message: any) => ({
-        ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null,
-        sender: safeUser(message.sender),
-      })) }, 200, origin);
+      const messages = await Promise.all((data || []).map(async (message: any) => {
+        let mediaUrl = null;
+        if (message.attachment_path) {
+          const { data: signed, error: signedError } = await db.storage.from("private-chat")
+            .createSignedUrl(message.attachment_path, 60 * 60);
+          if (signedError) throw signedError;
+          mediaUrl = signed?.signedUrl || null;
+        }
+        return { ...message, media_url: mediaUrl, sender: safeUser(message.sender) };
+      }));
+      return response({ messages }, 200, origin);
     }
     if (action === "dm-group-attachment-upload") {
       const current = requireUser();
@@ -779,7 +786,7 @@ Deno.serve(async (req: Request) => {
         return fail("This group attachment type or size is not supported.", 422, origin);
       }
       const path = current.profile.id + "/groups/" + groupId + "/" + crypto.randomUUID() + ".bin";
-      const { data, error } = await db.storage.from("media").createSignedUploadUrl(path, { upsert: false });
+      const { data, error } = await db.storage.from("private-chat").createSignedUploadUrl(path, { upsert: false });
       if (error || !data?.token) throw error || new Error("Could not create a secure group upload URL.");
       return response({ path, uploadToken: data.token }, 200, origin);
     }
@@ -797,7 +804,7 @@ Deno.serve(async (req: Request) => {
       if (messageType !== "text") {
         if (!attachmentPath.startsWith(current.profile.id + "/groups/" + groupId + "/")
           || !["image/jpeg","image/png","image/webp","audio/webm","audio/ogg","audio/mp4","audio/mpeg"].includes(attachmentMime)
-          || !(await storageFileExists(attachmentPath))) return fail("Group attachment could not be verified.", 422, origin);
+          || !(await storageFileExists(attachmentPath, "private-chat"))) return fail("Group attachment could not be verified.", 422, origin);
       }
       const { data: message, error } = await db.from("dm_group_messages").insert({
         group_id: groupId, sender_id: current.profile.id, content,
@@ -813,7 +820,14 @@ Deno.serve(async (req: Request) => {
         user_id: member.user_id, actor_id: current.profile.id, type: "group_message",
         message: "@" + current.profile.username + " sent a message in your group.",
       })));
-      return response({ message: { ...message, media_url: message.attachment_path ? publicMedia(message.attachment_path) : null } }, 201, origin);
+      let mediaUrl = null;
+      if (message.attachment_path) {
+        const { data: signed, error: signedError } = await db.storage.from("private-chat")
+          .createSignedUrl(message.attachment_path, 60 * 60);
+        if (signedError) throw signedError;
+        mediaUrl = signed?.signedUrl || null;
+      }
+      return response({ message: { ...message, media_url: mediaUrl } }, 201, origin);
     }
     if (action === "dm-group-delete-message") {
       const current = requireUser();
@@ -827,7 +841,7 @@ Deno.serve(async (req: Request) => {
       if (removeError) throw removeError;
       let storageCleanupPending = false;
       if (message.attachment_path) {
-        const { error: storageError } = await db.storage.from("media").remove([message.attachment_path]);
+        const { error: storageError } = await db.storage.from("private-chat").remove([message.attachment_path]);
         storageCleanupPending = !!storageError;
       }
       return response({ ok: true, storageCleanupPending }, 200, origin);
