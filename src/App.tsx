@@ -1558,9 +1558,9 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onStartCa
             </div>)}
           </div>
           {selected.status === 'accepted' ? <form className="dm-compose dm-compose-inline" onSubmit={sendMessage}>
-            {!selected.is_group && <><input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
-            <button type="button" className="dm-attach-btn" title="Send a photo" onClick={() => photoInputRef.current?.click()} disabled={busy}><Image size={19} /></button>
-            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button></>}
+            <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
+            <button type="button" className="dm-attach-btn" title={selected.is_group ? "Share a photo with the group" : "Send a photo"} onClick={() => photoInputRef.current?.click()} disabled={busy}><Image size={19} /></button>
+            <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : selected.is_group ? 'Record a group voice note' : 'Record voice note'} onClick={toggleRecording} disabled={busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
             <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={1000} placeholder="Message… (Enter to send, Shift + Enter for a new line)" disabled={busy} />
             <button className="button button-primary dm-send-button" disabled={busy || !composer.trim()} aria-label="Send message"><Send size={17} /></button>
           </form> : selected.requester_id === user.id
