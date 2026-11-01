@@ -1,5 +1,12 @@
 export type MediaKind = 'reel' | 'video';
 
+export function isReelVideo(post: { media_type?: string; kind?: string; duration_seconds?: number | string | null }): boolean {
+  if (post.media_type !== 'video') return false;
+  if (post.kind === 'reel') return true;
+  const duration = Number(post.duration_seconds);
+  return Number.isFinite(duration) && duration > 0 && duration <= 120;
+}
+
 export function classifyVideo(durationSeconds: number): MediaKind {
   if (!Number.isFinite(durationSeconds) || durationSeconds < 0) throw new Error('Video duration must be a non-negative number.');
   return durationSeconds <= 120 ? 'reel' : 'video';
