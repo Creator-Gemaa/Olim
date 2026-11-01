@@ -858,7 +858,7 @@ function MobilePermissionsPrompt({ onClose }: { onClose: () => void }) {
       <div className="mobile-permissions-icon"><ShieldCheck size={25} /></div>
       <p className="eyebrow">A BETTER MOBILE EXPERIENCE</p>
       <h2 id="mobile-permissions-title">Set up VYRA permissions.</h2>
-      <p className="mobile-permissions-copy">Microphone access enables voice calls and voice messages. Notifications allow this device to show VYRA alerts.</p>
+      <p className="mobile-permissions-copy">Microphone access enables voice calls and voice messages. Notification permission lets this device display system alerts.</p>
       <div className="mobile-permission-row">
         <span className="mobile-permission-symbol"><Mic size={19} /></span>
         <span><b>Microphone</b><small>{statusLabel(microphone)}</small></span>
@@ -869,7 +869,7 @@ function MobilePermissionsPrompt({ onClose }: { onClose: () => void }) {
         <span><b>Notifications</b><small>{statusLabel(notifications)}</small></span>
         <button className="button button-soft" type="button" disabled={busy !== null || notifications === 'granted' || notifications === 'unavailable'} onClick={() => void requestNotifications()}>{notifications === 'granted' ? 'Allowed' : busy === 'notifications' ? 'Requesting…' : 'Allow'}</button>
       </div>
-      <p className="microcopy">You can change these permissions later in your device settings. In-app notifications remain available even when device notifications are off.</p>
+      <p className="microcopy">You can change these permissions later in device settings. Your activity notifications are always available inside VYRA; background alerts depend on notification delivery being configured.</p>
       <button className="button button-primary button-wide" type="button" disabled={busy !== null} onClick={onClose}>Continue to VYRA</button>
     </section>
   </div>;
@@ -1694,7 +1694,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
           </div>
           <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
         </>}
-        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place. Device alerts can be enabled separately.</p></div></div><div className="settings-actions"><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button><button className="button button-soft" onClick={onRequestPermissions}>Manage device permissions</button></div></div>}
+        {activeSection === 'notifications' && <div className="settings-card"><div className="settings-card-head"><Bell /><div><h3>Notifications</h3><p>See follows, appreciations, replies and creator activity in one place. Device-level alert permission is managed separately.</p></div></div><div className="settings-actions"><button className="button button-primary" onClick={onOpenNotifications}>Open notifications</button><button className="button button-soft" onClick={onRequestPermissions}>Manage device permissions</button></div></div>}
         {activeSection === 'privacy' && <div className="settings-card"><div className="settings-card-head"><ShieldCheck /><div><h3>Privacy & messages</h3><p>Understand how your content and conversations are handled.</p></div></div><div className="settings-privacy-copy"><b>Direct messages</b><p>New chats use standard VYRA message storage and are not end-to-end encrypted. Only start conversations with people you trust, and avoid sending passwords or highly sensitive information.</p><b>Older conversations</b><p>Messages created with the previous encrypted-chat system can still be restored on this device when you have their original saved key.</p><b>Message requests</b><p>New conversations begin as requests. The recipient must accept before the regular chat opens.</p></div></div>}
         {activeSection === 'creator' && (<div className="settings-card"><div className="settings-card-head"><Music2 /><div><h3>Your audio library</h3><p>Add MP3 or M4A recordings that you own or are licensed to use.</p></div></div>
       <div className="settings-form"><label>TRACK TITLE<input value={title} onChange={e => setTitle(e.target.value)} placeholder="Song or recording name" /></label><label>ARTIST<input value={artist} onChange={e => setArtist(e.target.value)} placeholder="Artist name" /></label>
