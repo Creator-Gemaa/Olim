@@ -47,6 +47,26 @@ jobs:
         run: npm run build
       - name: Add Android platform
         run: npx cap add android
+      - name: Add microphone permission to Android
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          manifest = Path("android/app/src/main/AndroidManifest.xml")
+          source = manifest.read_text()
+          permissions = [
+              '    <uses-permission android:name="android.permission.RECORD_AUDIO" />',
+              '    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />',
+          ]
+          missing = [permission for permission in permissions if permission not in source]
+          if missing:
+              marker = "    <application"
+              if marker not in source:
+                  raise SystemExit("Could not locate the Android application manifest section")
+              source = source.replace(marker, "\n".join(missing) + "\n" + marker, 1)
+              manifest.write_text(source)
+          print("Android microphone permissions are configured")
+          PY
       - name: Set Android app version
         run: |
           python3 - <<'PY'
