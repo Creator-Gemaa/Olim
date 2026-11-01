@@ -86,6 +86,25 @@ export async function uploadChatAttachment(
   return signed.path;
 }
 
+
+export async function uploadGroupChatAttachment(
+  blob: Blob,
+  groupId: string,
+  token: string,
+  messageType: "image" | "voice",
+  originalMime: string,
+) {
+  const signed = await callApi<{ path: string; uploadToken: string }>("dm-group-attachment-upload", {
+    groupId, messageType, mimeType: originalMime, size: blob.size,
+  }, token);
+  const { error } = await supabase.storage.from("media").uploadToSignedUrl(
+    signed.path, signed.uploadToken, blob,
+    { contentType: originalMime, upsert: false },
+  );
+  if (error) throw new Error(error.message);
+  return signed.path;
+}
+
 export async function uploadMedia(
   file: File,
   purpose: 'post' | 'story' | 'avatar' | 'audio',
