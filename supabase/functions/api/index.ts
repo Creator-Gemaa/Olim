@@ -259,7 +259,44 @@ Deno.serve(async (req: Request) => {
         .order("created_at", { ascending: false }).limit(60);
       if (error) throw error;
 
-      // The World Feed is a fresh India-time day bucket. Equal scores keep the earliest upload first.
+      // Personalize Reels from videos this creator has liked, then mix in discovery.
+      const { data: likedRows, error: likedError } = await db.from("likes")
+        .select("post_id").eq("user_id", current.profile.id).limit(250);
+      if (likedError) throw likedError;
+      const likedPostIds = (likedRows || []).map((item: any) => item.post_id).filter(Boolean);
+      const likedCreatorIds = new Set<string>();
+      if (likedPostIds.length) {
+        const { data: likedVideoRows, error: likedVideoError } = await db.from("posts")
+          .select("user_id").in("id", likedPostIds).eq("status", "approved").eq("media_type", "video");
+        if (likedVideoError) throw likedVideoError;
+        (likedVideoRows || []).forEach((item: any) => {
+          if (item.user_id && item.user_id !== current.profile.id) likedCreatorIds.add(item.user_id);
+        });
+      }
+      const { data: reelRows, error: reelError } = await db.from("posts")
+        .select("*,author:profiles!posts_user_id_fkey(*)")
+        .eq("status", "approved").eq("media_type", "video").eq("kind", "reel")
+        .neq("user_id", current.profile.id)
+        .order("created_at", { ascending: false }).limit(250);
+      if (reelError) throw reelError;
+      const shuffle = (items: any[]) => {
+        const result = [...items];
+        for (let index = result.length - 1; index > 0; index--) {
+          const swapIndex = Math.floor(Math.random() * (index + 1));
+          [result[index], result[swapIndex]] = [result[swapIndex], result[index]];
+        }
+        return result;
+      };
+      const preferredReels = shuffle((reelRows || []).filter((post: any) => likedCreatorIds.has(post.user_id)));
+      const discoveryReels = shuffle((reelRows || []).filter((post: any) => !likedCreatorIds.has(post.user_id)));
+      const randomizedReels: any[] = [];
+      while (preferredReels.length || discoveryReels.length) {
+        const choosePreferred = preferredReels.length > 0 &&
+          (discoveryReels.length === 0 || Math.random() < 0.68);
+        randomizedReels.push(choosePreferred ? preferredReels.pop() : discoveryReels.pop());
+      }
+
+      // The World Feed is a fresh India-time day bucket, ranked independently of personalized Reels.
       const { data: worldRows, error: worldError } = await db.from("posts")
         .select("*,author:profiles!posts_user_id_fkey(*)")
         .eq("status", "approved").eq("media_type", "video")
@@ -286,6 +323,7 @@ Deno.serve(async (req: Request) => {
       return response({
         posts: await enrichPosts(rows || [], current.profile.id),
         stories,
+        reels: await enrichPosts(randomizedReels.slice(0, 150), current.profile.id),
         worldFeed: await enrichPosts(rankedWorldRows, current.profile.id),
         worldFeedResetsAt: "00:00 Asia/Kolkata",
       }, 200, origin);
