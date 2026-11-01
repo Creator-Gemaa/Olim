@@ -1791,6 +1791,16 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
     } catch (e) { setPaymentMessage(e instanceof Error ? e.message : 'Could not connect Razorpay.'); }
     finally { setBusy(false); }
   }
+  async function toggleMembershipPlan(plan: any) {
+    setBusy(true); setPaymentMessage('');
+    try {
+      await callApi('membership-plan-toggle', { planId: plan.id, isActive: !plan.is_active }, token);
+      await refreshMonetization();
+      setPaymentMessage(plan.is_active ? 'Tier paused. Existing active subscriptions are not automatically cancelled.' : 'Tier is active again and can accept new members.');
+    } catch (error) {
+      setPaymentMessage(error instanceof Error ? error.message : 'Could not update this tier.');
+    } finally { setBusy(false); }
+  }
   async function createMembershipPlan() {
     if (!planName.trim()) return setPaymentMessage('Enter a membership tier name.');
     setBusy(true); setPaymentMessage('');
@@ -1867,6 +1877,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
                 <div><span>Follower milestone</span><b>{Number(monetization.followerCount || 0).toLocaleString('en-IN')} / 20,000</b></div>
                 <div className="monetization-progress-track"><span style={{ width: Math.min(100, Number(monetization.followerCount || 0) / 20000 * 100) + '%' }} /></div>
               </div>
+              {monetization.eligible && <div className="monetization-stats"><div><small>ACTIVE MEMBERS</small><b>{Number(monetization.activeMemberCount || 0).toLocaleString('en-IN')}</b></div><div><small>LIVE TIERS</small><b>{(monetization.plans || []).filter((plan: any) => plan.is_active).length}</b></div><div><small>WEBHOOK</small><b className={monetization.webhookReady ? 'is-ready' : 'is-pending'}>{monetization.webhookReady ? 'Verified' : 'Setup needed'}</b></div></div>}
               {!monetization.eligible && <div className="monetization-locked"><LockKeyhole size={23} /><div><b>Monetization is not unlocked yet</b><p>Reach 20,000 real followers. Your progress is checked by VYRA’s server, so changing a profile number cannot unlock payments.</p></div></div>}
               {monetization.eligible && !monetization.connection && <>
                 <p className="monetization-ready-copy">You reached the milestone. Connect the Razorpay merchant account that should receive your channel membership payments.</p>
@@ -1895,7 +1906,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
                   </div>
                 </div>
                 <div className="membership-plan-list"><div className="section-title"><h3>Your tiers</h3><span>{monetization.plans?.length || 0} created</span></div>
-                  {monetization.plans?.length ? <div className="membership-plan-grid">{monetization.plans.map((plan: any) => <article className="membership-plan-card" key={plan.id}><span className="creator-tier-label">CHANNEL TIER</span><h4>{plan.name}</h4><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')} <small>/ {plan.interval > 1 ? plan.interval + ' ' : ''}{plan.period}</small></strong><p>{plan.description}</p>{Array.isArray(plan.features) && <ul>{plan.features.map((feature: string, index: number) => <li key={index}><Check size={13} />{feature}</li>)}</ul><span className="badge-muted">{plan.is_active ? 'Active' : 'Paused'}</span></article>)}</div>
+                  {monetization.plans?.length ? <div className="membership-plan-grid">{monetization.plans.map((plan: any) => <article className="membership-plan-card" key={plan.id}><span className="creator-tier-label">CHANNEL TIER</span><h4>{plan.name}</h4><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')} <small>/ {plan.interval > 1 ? plan.interval + ' ' : ''}{plan.period}</small></strong><p>{plan.description}</p><div className="tier-member-count"><Users size={14} /> {Number(plan.active_members || 0).toLocaleString('en-IN')} active members</div>{Array.isArray(plan.features) && <ul>{plan.features.map((feature: string, index: number) => <li key={index}><Check size={13} />{feature}</li>)}</ul><div className="tier-admin-actions"><span className={'badge-muted ' + (plan.is_active ? 'tier-active' : 'tier-paused')}>{plan.is_active ? 'Accepting members' : 'Paused'}</span><button className="button button-soft" onClick={() => void toggleMembershipPlan(plan)} disabled={busy}>{plan.is_active ? 'Pause tier' : 'Activate tier'}</button></div></article>)}</div>
                     : <div className="empty-card compact"><Crown /><h3>Your first tier starts here.</h3><p>Create a membership above to give your biggest supporters exclusive access.</p></div>}
                 </div>
               </>}
