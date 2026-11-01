@@ -95,11 +95,13 @@ export async function uploadMedia(
   if (!acceptedMediaType(file.type)) throw new Error('Use a JPG, PNG, WebP, MP4, WebM or MP3 file.');
   if (file.size <= 0 || file.size > maxBytesFor(file.type)) throw new Error('This file is empty or larger than the allowed size.');
   const fingerprint = await sha256(file);
-  const signed = await callApi<{ path: string; uploadToken: string; blocked?: boolean }>('create-upload', {
+  const signed = await callApi<{ path: string; uploadToken: string; bucket?: string; blocked?: boolean }>('create-upload', {
     purpose, fileName: file.name, mimeType: file.type, size: file.size, sha256: fingerprint,
+    visibility: extra.visibility || 'public',
+    membershipPlanId: extra.membershipPlanId || undefined,
   }, token);
   if (signed.blocked) throw new Error('This exact file matches a registered copyrighted asset and cannot be published.');
-  const { error } = await supabase.storage.from('media').uploadToSignedUrl(
+  const { error } = await supabase.storage.from(signed.bucket || 'media').uploadToSignedUrl(
     signed.path, signed.uploadToken, file, { contentType: file.type, upsert: false },
   );
   if (error) throw new Error(error.message);
