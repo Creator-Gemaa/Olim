@@ -1438,24 +1438,39 @@ Deno.serve(async (req: Request) => {
       const current = requireUser();
       const followerCount = await getFollowerCount(current.profile.id);
       const eligible = await isMonetizationUnlocked(current.profile.id);
-      const [{ data: connection, error: connectionError }, { data: plans, error: plansError }] = await Promise.all([
+      const [{ data: connection, error: connectionError }, { data: plans, error: plansError }, { data: activeSubscriptions, error: activeSubscriptionsError }] = await Promise.all([
         db.from("creator_payment_connections")
           .select("provider,connected_at,updated_at,billing_consent_at,billing_consent_version")
           .eq("creator_id", current.profile.id).maybeSingle(),
         db.from("membership_plans")
           .select("id,name,description,features,amount_paise,currency,period,interval,is_active,created_at")
           .eq("creator_id", current.profile.id).order("created_at", { ascending: false }).limit(20),
+        db.from("subscriptions").select("membership_plan_id,current_end_at")
+          .eq("creator_id", current.profile.id).eq("status", "active"),
       ]);
       if (connectionError) throw connectionError;
       if (plansError) throw plansError;
+      if (activeSubscriptionsError) throw activeSubscriptionsError;
       const { data: latestWebhook, error: webhookError } = connection
         ? await db.from("razorpay_webhook_events").select("processed_at,event_type")
-          .eq("creator_id", current.profile.id).order("processed_at", { ascending: false }).limit(1).maybeSingle()
+          .eq("creator_id", current.profile.id).like("event_type", "subscription.%")
+          .order("processed_at", { ascending: false }).limit(1).maybeSingle()
         : { data: null, error: null };
       if (webhookError) throw webhookError;
+      const now = Date.now();
+      const activeRows = (activeSubscriptions || []).filter((row: any) =>
+        !row.current_end_at || new Date(row.current_end_at).getTime() > now
+      );
+      const memberCountByPlan = new Map<string, number>();
+      for (const row of activeRows) memberCountByPlan.set(row.membership_plan_id,
+        (memberCountByPlan.get(row.membership_plan_id) || 0) + 1);
+      const enrichedPlans = (plans || []).map((plan: any) => ({
+        ...plan, active_members: memberCountByPlan.get(plan.id) || 0,
+      }));
       return response({
         followerCount, threshold: 20000, eligible,
-        connection: connection || null, plans: plans || [],
+        connection: connection || null, plans: enrichedPlans,
+        activeMemberCount: activeRows.length,
         webhookReady: !!latestWebhook,
         lastWebhookAt: latestWebhook?.processed_at || null,
       }, 200, origin);
@@ -1536,6 +1551,20 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       await audit(current.profile.id, "create_membership_plan", plan.id, { amountPaise, period, interval, followerCount });
       return response({ plan }, 201, origin);
+    }
+    if (action === "membership-plan-toggle") {
+      const current = requireUser();
+      const planId = String(body.planId || "");
+      const isActive = body.isActive === true;
+      if (!/^[0-9a-f-]{36}$/i.test(planId)) return fail("Choose a valid membership tier.", 422, origin);
+      const { data: plan, error } = await db.from("membership_plans")
+        .update({ is_active: isActive, updated_at: new Date().toISOString() })
+        .eq("id", planId).eq("creator_id", current.profile.id)
+        .select("id,is_active").maybeSingle();
+      if (error) throw error;
+      if (!plan) return fail("Membership tier not found.", 404, origin);
+      await audit(current.profile.id, isActive ? "activate_membership_plan" : "pause_membership_plan", plan.id);
+      return response({ plan }, 200, origin);
     }
     if (action === "membership-plans") {
       const current = requireUser();
