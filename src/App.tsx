@@ -8,7 +8,7 @@ import {
   Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus, Trash2,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
   Share2, Copy, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
-  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
+  Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2, Users, UserPlus, Lock, CheckCircle2, Pencil,
 } from 'lucide-react';
 import { callApi, clearSessionToken, getSessionToken, setSessionToken, uploadMedia } from './lib/api';
 import { classifyVideo, generateVideoCopy, isReelVideo, maxBytesFor, videoDuration } from './lib/media';
@@ -285,7 +285,7 @@ type BulkVideoItem = {
   error?: string;
 };
 
-function UploadModal({ token, onClose, onDone }: { token: string; onClose: () => void; onDone: () => void }) {
+function UploadModal({ token, user, onClose, onDone }: { token: string; user: User; onClose: () => void; onDone: () => void }) {
   const [kind, setKind] = useState<'post' | 'story'>('post');
   const [bulkMode, setBulkMode] = useState(false);
   const [file, setFile] = useState<File | null>(null);
@@ -295,10 +295,22 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
   const [rights, setRights] = useState(false);
   const [tracks, setTracks] = useState<any[]>([]);
   const [audioTrackId, setAudioTrackId] = useState('');
+  const [memberOnly, setMemberOnly] = useState(false);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipUnlocked, setMembershipUnlocked] = useState(false);
+  const [membershipPlanId, setMembershipPlanId] = useState('');
   const [bulkVideos, setBulkVideos] = useState<BulkVideoItem[]>([]);
   const [bulkBusy, setBulkBusy] = useState(false);
   const [bulkProgress, setBulkProgress] = useState({ done: 0, total: 0 });
   useEffect(() => { callApi<{ tracks: any[] }>('list-audio', {}, token).then(r => setTracks(r.tracks)).catch(() => undefined); }, [token]);
+  useEffect(() => {
+    callApi<{ unlocked: boolean; plans: any[] }>('membership-status', {}, token).then(result => {
+      setMembershipUnlocked(result.unlocked);
+      const activePlans = (result.plans || []).filter(plan => plan.is_active);
+      setMembershipPlans(activePlans);
+      setMembershipPlanId(current => current || activePlans[0]?.id || '');
+    }).catch(() => undefined);
+  }, [token]);
 
   function patchBulkVideo(id: string, patch: Partial<BulkVideoItem>) {
     setBulkVideos(current => current.map(item => item.id === id ? { ...item, ...patch } : item));
@@ -387,12 +399,17 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
       const generatedCopy = kind === 'post' && file.type.startsWith('video/')
         ? generateVideoCopy(file, duration)
         : null;
+      if (memberOnly && (!file.type.startsWith('video/') || !membershipPlanId)) {
+        throw new Error('Choose a video and an active membership plan before publishing for members.');
+      }
       await uploadMedia(file, kind, token, {
         title: generatedCopy?.title,
         caption: caption.trim() || generatedCopy?.description || caption,
         durationSeconds: duration, category,
         rightsConfirmation: 'I own or have permission to publish this media.',
         audioTrackId: kind === 'post' ? audioTrackId || undefined : undefined,
+        visibility: kind === 'post' && memberOnly ? 'members_only' : 'public',
+        membershipPlanId: kind === 'post' && memberOnly ? membershipPlanId : undefined,
       });
       const isVideoPost = kind === 'post' && file.type.startsWith('video/');
       setMessage(kind === 'story' ? 'Story uploaded. It will appear after review.' : isVideoPost ? 'Video published instantly to VYRA and today’s World Feed.' : 'Photo submitted for community review.');
@@ -452,6 +469,11 @@ function UploadModal({ token, onClose, onDone }: { token: string; onClose: () =>
         {kind === 'post' && tracks.length > 0 && <label className="modal-label audio-choice">ADD YOUR AUDIO TRACK<select value={audioTrackId} onChange={e => setAudioTrackId(e.target.value)}><option value="">No soundtrack</option>{tracks.map(track => <option key={track.id} value={track.id}>{track.title}{track.artist ? ' — ' + track.artist : ''}</option>)}</select></label>}
         {kind === 'post' && tracks.length === 0 && <p className="microcopy">Add your own licensed MP3/M4A in Settings to attach a soundtrack.</p>}
         {file?.type.startsWith('video/') && <p className="microcopy">Videos up to 2:00 are Reels. Longer videos are categorized as Videos.</p>}
+        {kind === 'post' && file?.type.startsWith('video/') && membershipUnlocked && <div className="member-upload-control">
+          <label className="check-line"><input type="checkbox" checked={memberOnly} onChange={e => setMemberOnly(e.target.checked)} /> <Lock size={15} /> Make this video members-only</label>
+          {memberOnly && (membershipPlans.length ? <label className="modal-label">MEMBERSHIP PLAN<select value={membershipPlanId} onChange={e => setMembershipPlanId(e.target.value)}>{membershipPlans.map(plan => <option key={plan.id} value={plan.id}>{plan.name} · ₹{(plan.amount_paise / 100).toLocaleString('en-IN')}/{plan.period === 'yearly' ? 'year' : 'month'}</option>)}</select></label> : <p className="microcopy">Create an active membership plan in Settings → Monetization before publishing member-only videos.</p>)}
+          <p className="microcopy">Only active subscribers of the selected plan can load this video. It is stored in VYRA’s private member-media bucket.</p>
+        </div>}
         <label className="check-line"><input type="checkbox" checked={rights} onChange={e => setRights(e.target.checked)} /> I own this content or have permission to publish it, including any audio.</label>
         {message && <div className={message.includes('submitted') || message.includes('uploaded') || message.includes('published') ? 'notice-success' : 'form-error'}>{message}</div>}
         <button className="button button-primary button-wide" onClick={submitSingle} disabled={busy}>{busy ? 'Uploading securely…' : kind === 'story' ? 'Share story' : file?.type.startsWith('video/') ? 'Publish video now' : 'Submit photo for review'} <span>↗</span></button>
@@ -1039,6 +1061,10 @@ function ReelsFeed({ posts, onLike, onSave, onProfile, onView, onComment, onShar
 
 function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: boolean; token: string; onRefresh: () => void }) {
   const [posts, setPosts] = useState<Post[]>([]);
+  const [membershipPlans, setMembershipPlans] = useState<any[]>([]);
+  const [membershipBusy, setMembershipBusy] = useState(false);
+  const [membershipMessage, setMembershipMessage] = useState('');
+  const [membershipStatusLoading, setMembershipStatusLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [display, setDisplay] = useState(profile.display_name);
   const [bio, setBio] = useState(profile.bio);
@@ -1046,6 +1072,16 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
   const [message, setMessage] = useState('');
   const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   useEffect(() => { callApi<{ posts: Post[] }>('profile-posts', { username: profile.username }, token).then(r => setPosts(r.posts)).catch(e => setMessage(e.message)); }, [profile.username, token]);
+  useEffect(() => {
+    if (own) { setMembershipPlans([]); return; }
+    let active = true;
+    setMembershipStatusLoading(true);
+    callApi<{ plans: any[] }>('creator-membership-plans', { creatorId: profile.id }, token)
+      .then(result => { if (active) setMembershipPlans(result.plans || []); })
+      .catch(error => { if (active) setMembershipMessage(error instanceof Error ? error.message : 'Membership plans could not load.'); })
+      .finally(() => { if (active) setMembershipStatusLoading(false); });
+    return () => { active = false; };
+  }, [own, profile.id, token]);
   async function removeCreatorVideo(post: Post) {
     if (!own || post.media_type !== 'video' || deletingPostId) return;
     if (!window.confirm('Delete this video from your creator wall? This cannot be undone.')) return;
@@ -1061,6 +1097,47 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Could not delete this video.');
     } finally { setDeletingPostId(null); }
+  }
+  async function subscribeToPlan(plan: any) {
+    if (membershipBusy || plan.subscribed) return;
+    setMembershipBusy(true); setMembershipMessage('');
+    try {
+      const started = await callApi<{ subscriptionId: string; keyId: string; plan: any }>('membership-start', { planId: plan.id }, token);
+      const win = window as any;
+      if (!win.Razorpay) {
+        await new Promise<void>((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = 'https://checkout.razorpay.com/v1/checkout.js'; script.async = true;
+          script.onload = () => resolve();
+          script.onerror = () => reject(new Error('Razorpay Checkout could not load. Check your connection and try again.'));
+          document.body.appendChild(script);
+        });
+      }
+      const RazorpayCheckout = (window as any).Razorpay;
+      if (!RazorpayCheckout) throw new Error('Razorpay Checkout is unavailable in this app version.');
+      const checkout = new RazorpayCheckout({
+        key: started.keyId, subscription_id: started.subscriptionId,
+        name: 'VYRA', description: plan.name + ' · @' + profile.username,
+        theme: { color: '#8b5cf6' },
+        handler: async (result: any) => {
+          try {
+            await callApi('membership-verify', {
+              subscriptionId: started.subscriptionId,
+              razorpayPaymentId: result.razorpay_payment_id,
+              razorpaySignature: result.razorpay_signature,
+            }, token);
+            setMembershipPlans(current => current.map(item => item.id === plan.id ? { ...item, subscribed: true } : item));
+            setMembershipMessage('You are now an active member of @' + profile.username + '!');
+          } catch (error) {
+            setMembershipMessage(error instanceof Error ? error.message : 'Payment verification is pending. Refresh before trying again.');
+          }
+        },
+        modal: { ondismiss: () => setMembershipMessage('Checkout closed. No membership was activated.') },
+      });
+      checkout.open();
+    } catch (error) {
+      setMembershipMessage(error instanceof Error ? error.message : 'Could not start membership checkout.');
+    } finally { setMembershipBusy(false); }
   }
   async function save() {
     setBusy(true); setMessage('');
@@ -1081,7 +1158,20 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
       {!editing && <><b>{profile.display_name}</b><p>{profile.bio || 'Creating my own little corner of the internet.'}</p><span className="verified-caption">{profile.is_verified ? 'Verified creator' : 'Creator on the rise'}</span></>}
       {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
       {message && <div className="form-error">{message}</div>}
-    </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
+    </div></div>
+    {!own && (membershipPlans.length > 0 || membershipStatusLoading) && <section className="member-plans-panel">
+      <div className="member-plans-heading"><div><span className="eyebrow">VYRA MEMBERSHIPS</span><h3>Join @{profile.username}'s inner circle</h3><p>Support this creator and unlock exclusive videos and member perks.</p></div><span className="member-crown"><Crown size={22} /></span></div>
+      {membershipPlans.map(plan => <article className="member-plan-card" key={plan.id}>
+        <div className="member-plan-top"><div><b>{plan.name}</b><small>{plan.description || 'Creator membership'}</small></div><strong>₹{(plan.amount_paise / 100).toLocaleString('en-IN')}<small> / {plan.period === 'yearly' ? 'year' : 'month'}</small></strong></div>
+        <ul>{(Array.isArray(plan.features) ? plan.features : []).map((feature: string, index: number) => <li key={index}><CheckCircle2 size={14} />{feature}</li>)}</ul>
+        <button className={'button ' + (plan.subscribed ? 'button-soft following-button' : 'button-primary')} disabled={membershipBusy || plan.subscribed} onClick={() => void subscribeToPlan(plan)}>
+          {plan.subscribed ? '✓ You are a member' : membershipBusy ? 'Opening secure checkout…' : 'Subscribe with Razorpay'}
+        </button>
+      </article>)}
+      {membershipMessage && <p className="microcopy">{membershipMessage}</p>}
+      <p className="member-plan-footnote">Recurring billing is processed in the creator's own Razorpay merchant account. VYRA does not hold subscription funds.</p>
+    </section>}
+    <div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
     {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted playsInline preload="metadata" /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span>{own && p.media_type === 'video' && <button type="button" className="profile-tile-delete" title="Delete your video" aria-label="Delete your video" disabled={deletingPostId === p.id || !!deletingPostId} onClick={() => void removeCreatorVideo(p)}>{deletingPostId === p.id ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}</button>}</div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
   </section>;
 }
