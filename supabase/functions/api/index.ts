@@ -1076,8 +1076,15 @@ Deno.serve(async (req: Request) => {
         .select("id,user_a,user_b,status").eq("id", conversationId).maybeSingle();
       if (!conversation || conversation.status !== "accepted"
         || (conversation.user_a !== current.profile.id && conversation.user_b !== current.profile.id)) return fail("Accepted conversation not found.", 403, origin);
-      const { data: post } = await db.from("posts").select("id").eq("id", postId).eq("status","approved").maybeSingle();
+      const { data: post } = await db.from("posts")
+        .select("id,user_id,visibility,membership_plan_id").eq("id", postId).eq("status","approved").maybeSingle();
       if (!post) return fail("This post is no longer available to share.", 404, origin);
+      if (post.visibility === "members_only" && post.user_id !== current.profile.id) {
+        const { data: membership } = await db.from("subscriptions").select("id")
+          .eq("creator_id", post.user_id).eq("subscriber_id", current.profile.id)
+          .eq("membership_plan_id", post.membership_plan_id).eq("status", "active").maybeSingle();
+        if (!membership) return fail("Only active channel members can share this video.", 403, origin);
+      }
       const { data: message, error } = await db.from("dm_messages").insert({
         conversation_id: conversationId, sender_id: current.profile.id, content,
         message_type: "shared_post", shared_post_id: postId, e2ee_version: legacyEncrypted ? 1 : 0,
