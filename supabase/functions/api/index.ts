@@ -718,7 +718,7 @@ Deno.serve(async (req: Request) => {
 
     if (action === "dm-call-ice-config") {
       requireUser();
-      const iceServers: RTCIceServer[] = [
+      const iceServers: any[] = [
         { urls: ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"] },
       ];
       const turnUrls = (Deno.env.get("TURN_URLS") || "").split(",").map(value => value.trim()).filter(Boolean);

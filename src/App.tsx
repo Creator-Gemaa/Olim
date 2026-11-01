@@ -681,7 +681,6 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           callId: call.id, afterId: processedRef.current,
         }, token);
         if (!active) return;
-        if (isCaller && result.status === 'active' && phase !== 'Connected') setPhase('Connecting…');
         if (result.status === 'ended' || result.status === 'declined' || result.status === 'missed') {
           setPhase('Call ended');
           cleanup();
