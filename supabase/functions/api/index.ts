@@ -9,7 +9,7 @@ const PUBLISHABLE = (() => {
 const db = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
 });
-const allowedOrigins = (Deno.env.get("APP_ORIGINS") || "").split(",").map((v) => v.trim()).filter(Boolean);
+const origin = "*";
 const baseHeaders = {
   "Content-Type": "application/json",
   "Access-Control-Allow-Methods": "POST, OPTIONS",
@@ -178,12 +178,9 @@ function mimeFamily(type: string) {
 }
 
 Deno.serve(async (req: Request) => {
-  const originHeader = req.headers.get("origin") || "";
-  const origin = allowedOrigins.length ? (allowedOrigins.includes(originHeader) ? originHeader : "") : "*";
-  if (req.method === "OPTIONS") return new Response("ok", { headers: { ...baseHeaders, "Access-Control-Allow-Origin": origin || "null" } });
+  if (req.method === "OPTIONS") return new Response("ok", { headers: { ...baseHeaders, "Access-Control-Allow-Origin": origin } });
   if (req.method !== "POST") return fail("Use POST for API actions.", 405, origin || "null");
   if (!SUPABASE_URL || !SERVICE_KEY || !PUBLISHABLE) return fail("The FameLoop API is not configured yet.", 503, origin || "null");
-  if (allowedOrigins.length && !origin) return fail("This app origin is not allowed.", 403, "null");
   const apiKey = req.headers.get("apikey") || "";
   if (!constantTimeEqual(apiKey, PUBLISHABLE) && !constantTimeEqual(apiKey, Deno.env.get("SUPABASE_ANON_KEY") || "")) {
     return fail("Invalid application key.", 401, origin || "null");
