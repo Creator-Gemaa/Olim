@@ -1,4 +1,4 @@
-export const APP_VERSION = '1.0.6';
+export const APP_VERSION = '1.0.7';
 
 export const UPDATE_MANIFEST_URL =
   'https://raw.githubusercontent.com/Creator-Gemaa/Olim/vyra-latest/public/version.json';

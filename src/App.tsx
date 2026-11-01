@@ -4,7 +4,7 @@ import { Capacitor } from '@capacitor/core';
 import { APP_VERSION, checkLatestUpdate } from './lib/updates';
 import {
   Activity, BadgeCheck, Bell, Bookmark, Check, ChevronDown, Clapperboard, Compass,
-  Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus,
+  Crown, Film, Heart, Home, ImagePlus, LogOut, Menu, MessageCircle, Music2, Plus, Trash2,
   Search, Settings, ShieldCheck, Sparkles, UserRound, X, Zap, Eye, Send, RefreshCw,
   Share2, Phone, Video, PhoneOff, Mic, MicOff, Camera, CameraOff, Image, LockKeyhole,
   Volume2, VolumeX, Moon, Sun, Play, Pause, Maximize2,
@@ -557,6 +557,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   const startedRef = useRef(false);
   const processedRef = useRef(0);
   const pendingIceRef = useRef<RTCIceCandidateInit[]>([]);
+  const pollingRef = useRef(false);
   const [callStatus, setCallStatus] = useState<'ringing' | 'active' | 'ended'>(call.status);
   const [phase, setPhase] = useState(call.status === 'active' ? 'Connecting…' : 'Calling…');
   const [micOn, setMicOn] = useState(true);
@@ -600,24 +601,36 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
     let disposed = false;
     (async () => {
       try {
+        if (!navigator.mediaDevices?.getUserMedia || !window.isSecureContext) {
+          throw new Error('Calls need an HTTPS connection and browser microphone/camera support.');
+        }
         const stream = await navigator.mediaDevices.getUserMedia({
           audio: true, video: call.call_type === 'video',
         });
         if (disposed) { stream.getTracks().forEach(track => track.stop()); return; }
         localStreamRef.current = stream;
         if (localVideoRef.current) localVideoRef.current.srcObject = stream;
-        const pc = new RTCPeerConnection({
-          iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],
-        });
+        let iceServers: RTCIceServer[] = [
+          { urls: ['stun:stun.l.google.com:19302'] },
+        ];
+        try {
+          const iceConfig = await callApi<{ iceServers?: RTCIceServer[] }>('dm-call-ice-config', {}, token);
+          if (iceConfig.iceServers?.length) iceServers = iceConfig.iceServers;
+        } catch { /* Public STUN remains available when TURN is not configured. */ }
+        const pc = new RTCPeerConnection({ iceServers });
         peerRef.current = pc;
         stream.getTracks().forEach(track => pc.addTrack(track, stream));
         pc.ontrack = event => {
           const next = event.streams[0] || new MediaStream([event.track]);
           setRemoteStream(next);
           if (call.call_type === 'audio') {
-            if (remoteAudioRef.current) remoteAudioRef.current.srcObject = next;
+            if (remoteAudioRef.current) {
+              remoteAudioRef.current.srcObject = next;
+              void remoteAudioRef.current.play().catch(() => setPhase('Tap Answer again to enable audio playback'));
+            }
           } else if (remoteVideoRef.current) {
             remoteVideoRef.current.srcObject = next;
+            void remoteVideoRef.current.play().catch(() => setPhase('Tap the video area to start playback'));
           }
         };
         pc.onicecandidate = event => {
@@ -625,7 +638,13 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
         };
         pc.onconnectionstatechange = () => {
           if (pc.connectionState === 'connected') setPhase('Connected');
-          if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') setPhase('Connection interrupted');
+          else if (pc.connectionState === 'connecting') setPhase('Connecting…');
+          else if (pc.connectionState === 'disconnected') setPhase('Reconnecting…');
+          else if (pc.connectionState === 'failed') setPhase('Could not connect. A TURN relay may be required on this network.');
+        };
+        pc.oniceconnectionstatechange = () => {
+          if (pc.iceConnectionState === 'failed') setPhase('Network blocked. Configure TURN relay credentials in Supabase to improve call reachability.');
+          else if (pc.iceConnectionState === 'disconnected') setPhase('Network interrupted · reconnecting…');
         };
         if (isCaller) {
           const offer = await pc.createOffer();
@@ -636,8 +655,14 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           setPhase('Joining call…');
         }
       } catch (error) {
-        setPhase('Microphone or camera unavailable');
-        onToast(error instanceof Error ? error.message : 'Could not start call media.');
+        const name = error && typeof error === 'object' && 'name' in error ? String((error as { name?: string }).name) : '';
+        const message = name === 'NotAllowedError' || name === 'PermissionDeniedError'
+          ? 'Allow VYRA to use your microphone' + (call.call_type === 'video' ? ' and camera' : '') + ' in device settings, then try again.'
+          : name === 'NotFoundError' ? 'No compatible microphone or camera was found on this device.'
+          : name === 'NotReadableError' ? 'Your microphone or camera is being used by another app.'
+          : error instanceof Error ? error.message : 'Could not start call media.';
+        setPhase(message);
+        onToast(message);
       }
     })();
     return () => {
@@ -649,7 +674,8 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
   useEffect(() => {
     let active = true;
     async function pollSignals() {
-      if (!peerRef.current) return;
+      if (!peerRef.current || pollingRef.current) return;
+      pollingRef.current = true;
       try {
         const result = await callApi<{ signals: any[]; status: string }>('dm-call-signals', {
           callId: call.id, afterId: processedRef.current,
@@ -682,6 +708,7 @@ function CallOverlay({ call, user, token, onClose, onToast }: {
           }
         }
       } catch { /* A temporary signaling miss should not terminate the call. */ }
+      finally { pollingRef.current = false; }
     }
     const timer = window.setInterval(() => { void pollSignals(); }, 900);
     void pollSignals();
@@ -813,7 +840,24 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
   const [bio, setBio] = useState(profile.bio);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
+  const [deletingPostId, setDeletingPostId] = useState<string | null>(null);
   useEffect(() => { callApi<{ posts: Post[] }>('profile-posts', { username: profile.username }, token).then(r => setPosts(r.posts)).catch(e => setMessage(e.message)); }, [profile.username, token]);
+  async function removeCreatorVideo(post: Post) {
+    if (!own || post.media_type !== 'video' || deletingPostId) return;
+    if (!window.confirm('Delete this video from your creator wall? This cannot be undone.')) return;
+    setDeletingPostId(post.id);
+    setMessage('');
+    try {
+      const result = await callApi<{ ok: boolean; storageCleanupPending?: boolean }>('delete-own-post', { postId: post.id }, token);
+      setPosts(items => items.filter(item => item.id !== post.id));
+      onRefresh();
+      setMessage(result.storageCleanupPending
+        ? 'Video deleted. Its stored media file needs a cleanup retry.'
+        : 'Video deleted from your creator wall.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Could not delete this video.');
+    } finally { setDeletingPostId(null); }
+  }
   async function save() {
     setBusy(true); setMessage('');
     try { await callApi('update-profile', { displayName: display, bio }, token); setEditing(false); onRefresh(); }
@@ -834,7 +878,7 @@ function ProfileView({ profile, own, token, onRefresh }: { profile: User; own: b
       {editing && <div className="edit-profile"><label>Display name<input value={display} onChange={e => setDisplay(e.target.value)} maxLength={60} /></label><label>Bio<textarea rows={3} value={bio} onChange={e => setBio(e.target.value)} maxLength={300} /></label><button className="button button-primary" onClick={save} disabled={busy}>Save changes</button></div>}
       {message && <div className="form-error">{message}</div>}
     </div></div><div className="profile-posts-head"><span>THE CREATOR WALL</span><span>{posts.length} moments</span></div>
-    {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span></div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
+    {posts.length ? <div className="profile-grid">{posts.map(p => <div key={p.id} className="profile-tile">{p.media_type === 'video' ? <video src={p.media_url} muted playsInline preload="metadata" /> : <img src={p.media_url} alt={p.caption} />}<span><Heart size={14} fill="currentColor" /> {p.likes_count}</span>{own && p.media_type === 'video' && <button type="button" className="profile-tile-delete" title="Delete your video" aria-label="Delete your video" disabled={deletingPostId === p.id || !!deletingPostId} onClick={() => void removeCreatorVideo(p)}>{deletingPostId === p.id ? <RefreshCw size={15} className="spin" /> : <Trash2 size={15} />}</button>}</div>)}</div> : <div className="empty-card compact"><Sparkles size={25} /><h3>Space for your next big moment.</h3><p>Approved posts will find a home on this wall.</p></div>}
   </section>;
 }
 
@@ -846,6 +890,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
 }) {
   const [conversations, setConversations] = useState<DMConversation[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [inboxSearch, setInboxSearch] = useState('');
+  const [syncStatus, setSyncStatus] = useState<'syncing' | 'live' | 'reconnecting'>('syncing');
   const [messages, setMessages] = useState<DMMessage[]>([]);
   const [composeTarget, setComposeTarget] = useState<User | null>(null);
   const [composer, setComposer] = useState('');
@@ -871,6 +917,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const loadInbox = useCallback(async () => {
     const result = await callApi<{ conversations: DMConversation[] }>('dm-inbox', {}, token);
     setConversations(result.conversations);
+    setSyncStatus('live');
   }, [token]);
 
   useEffect(() => {
@@ -894,7 +941,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   useEffect(() => {
     loadInbox().catch(error => onToast(error instanceof Error ? error.message : 'Could not load messages.'))
       .finally(() => setLoading(false));
-    const refresh = window.setInterval(() => loadInbox().catch(() => undefined), 5000);
+    const refresh = window.setInterval(() => loadInbox().catch(() => setSyncStatus('reconnecting')), 5000);
     return () => window.clearInterval(refresh);
   }, [loadInbox, onToast]);
 
@@ -912,10 +959,18 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     let active = true;
     const loadMessages = async () => {
       const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selectedId }, token);
-      if (active) setMessages(result.messages);
+      if (active) {
+        setMessages(current => current.length === result.messages.length
+          && current.every((message, index) => message.id === result.messages[index]?.id)
+          ? current : result.messages);
+        setSyncStatus('live');
+      }
     };
-    loadMessages().catch(error => onToast(error instanceof Error ? error.message : 'Could not load this chat.'));
-    const refresh = window.setInterval(() => loadMessages().catch(() => undefined), 3500);
+    loadMessages().catch(error => {
+      setSyncStatus('reconnecting');
+      onToast(error instanceof Error ? error.message : 'Could not load this chat.');
+    });
+    const refresh = window.setInterval(() => loadMessages().catch(() => setSyncStatus('reconnecting')), 3500);
     return () => { active = false; window.clearInterval(refresh); };
   }, [selectedId, token, onToast]);
 
@@ -945,6 +1000,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   const incoming = conversations.filter(item => item.status === 'pending' && item.requester_id !== user.id);
   const sent = conversations.filter(item => item.status === 'pending' && item.requester_id === user.id);
   const chats = conversations.filter(item => item.status === 'accepted');
+  const matchesInbox = (item: DMConversation) => !inboxSearch.trim()
+    || item.otherUser.username.toLowerCase().includes(inboxSearch.trim().replace(/^@/, '').toLowerCase());
 
   async function unlockOrCreateKeys(event: FormEvent) {
     event.preventDefault();
@@ -1092,16 +1149,21 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
   async function sendMessage(event: FormEvent) {
     event.preventDefault();
     if (!selected || !composer.trim() || !identity) return;
+    const text = composer.trim();
     setBusy(true);
     try {
       const key = await getConversationKey(selected);
-      const content = await encryptText(composer.trim(), key);
-      await callApi('dm-send', { conversationId: selected.id, content, messageType: 'text' }, token);
+      const content = await encryptText(text, key);
       setComposer('');
-      const result = await callApi<{ messages: DMMessage[] }>('dm-messages', { conversationId: selected.id }, token);
-      setMessages(result.messages);
+      const result = await callApi<{ message: DMMessage }>('dm-send', { conversationId: selected.id, content, messageType: 'text' }, token);
+      setMessages(current => [...current.filter(message => message.id !== result.message.id), result.message]
+        .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime()));
+      setSyncStatus('live');
       await loadInbox();
-    } catch (error) { onToast(error instanceof Error ? error.message : 'Message could not be sent.'); }
+    } catch (error) {
+      setComposer(current => current || text);
+      onToast(error instanceof Error ? error.message : 'Message could not be sent.');
+    }
     finally { setBusy(false); }
   }
 
@@ -1195,12 +1257,14 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
     {keyState === 'ready' && <div className="e2ee-status"><LockKeyhole size={14} /><span>End-to-end encryption is enabled for new messages.</span><button onClick={lockKeys}>Lock</button></div>}
     <div className="dm-layout">
       <aside className="dm-inbox">
-        <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => onToast('Could not refresh messages.'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
+        <div className="dm-inbox-head"><b>Inbox</b><button className="icon-button" onClick={() => loadInbox().catch(() => setSyncStatus('reconnecting'))} aria-label="Refresh inbox"><RefreshCw size={16} /></button></div>
+        <div className="dm-inbox-search"><Search size={15} /><input value={inboxSearch} onChange={event => setInboxSearch(event.target.value)} placeholder="Search people or chats" aria-label="Search conversations" /></div>
         {loading && <p className="dm-empty-note">Loading your inbox…</p>}
-        {incoming.length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.length}</span></h4>{incoming.map(item => conversationButton(item, 'Message request'))}</div>}
-        {sent.length > 0 && <div className="dm-group"><h4>SENT REQUESTS</h4>{sent.map(item => conversationButton(item, 'Waiting for acceptance'))}</div>}
-        <div className="dm-group"><h4>CHATS</h4>{chats.map(item => conversationButton(item))}</div>
+        {incoming.filter(matchesInbox).length > 0 && <div className="dm-group"><h4>MESSAGE REQUESTS <span>{incoming.filter(matchesInbox).length}</span></h4>{incoming.filter(matchesInbox).map(item => conversationButton(item, 'Message request'))}</div>}
+        {sent.filter(matchesInbox).length > 0 && <div className="dm-group"><h4>SENT REQUESTS</h4>{sent.filter(matchesInbox).map(item => conversationButton(item, 'Waiting for acceptance'))}</div>}
+        <div className="dm-group"><h4>CHATS</h4>{chats.filter(matchesInbox).map(item => conversationButton(item))}</div>
         {!loading && conversations.length === 0 && <p className="dm-empty-note">No messages yet. Open a creator profile and choose Message to start a request.</p>}
+        {!loading && conversations.length > 0 && !conversations.some(matchesInbox) && <p className="dm-empty-note">No conversations match that search.</p>}
       </aside>
 
       <section className="dm-thread">
@@ -1212,6 +1276,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
           <div className="dm-thread-head">
             <Avatar user={selected.otherUser} size="md" />
             <div className="dm-thread-title"><b>@{selected.otherUser.username} {selected.otherUser.is_verified && <VerifiedBadge />}</b><small>{selected.status === 'accepted' ? 'End-to-end encrypted chat' : selected.requester_id === user.id ? 'Request sent · waiting for acceptance' : 'Encrypted message request'}</small></div>
+            {selected.status === 'accepted' && <span className={'dm-sync-pill dm-sync-' + syncStatus}><i />{syncStatus === 'live' ? 'Live' : syncStatus === 'syncing' ? 'Syncing' : 'Reconnecting'}</span>}
             {selected.status === 'accepted' && <div className="dm-call-actions"><button className="icon-button" title="Audio call" onClick={() => startCall('audio')}><Phone size={19} /></button><button className="icon-button" title="Video call" onClick={() => startCall('video')}><Video size={20} /></button></div>}
           </div>
           {selected.status === 'pending' && selected.requester_id !== user.id && <div className="dm-request-banner"><div><b>Accept this message request?</b><small>Accept to open the private chat. Declining keeps the chat closed.</small></div><div><button className="button button-primary" disabled={busy} onClick={() => respond('accept')}>Accept</button><button className="button button-soft" disabled={busy} onClick={() => respond('decline')}>Decline</button></div></div>}
@@ -1223,8 +1288,8 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
             <strong>{safetyCode || 'Generating…'}</strong>
             <p>Ask @{selected.otherUser.username} to open this same panel on their device and compare all groups using another trusted channel. A mismatch means you should not send sensitive information.</p>
           </div>}
-          <div className="dm-messages" ref={messagesRef}>
-            {messages.map(message => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '')}>
+          <div className="dm-messages" ref={messagesRef} aria-live="polite" aria-relevant="additions">
+            {messages.map((message, messageIndex) => <div key={message.id} className={'dm-bubble-row ' + (message.sender_id === user.id ? 'mine' : '') + (messages[messageIndex - 1]?.sender_id === message.sender_id ? ' grouped' : '')}>
               <div className="dm-bubble">
                 {message.message_type === 'shared_post' && message.shared_post && <div className="dm-shared-post">
                   {message.shared_post.media_type === 'video' ? <video src={message.shared_post.media_url} muted playsInline /> : <img src={message.shared_post.media_url} alt="Shared post" />}
@@ -1241,7 +1306,7 @@ function DirectMessages({ token, user, target, onClearTarget, onToast, onIdentit
             <input ref={photoInputRef} type="file" accept="image/jpeg,image/png,image/webp" hidden onChange={event => choosePhoto(event.target.files?.[0])} />
             <button type="button" className="dm-attach-btn" title="Send an encrypted photo" onClick={() => photoInputRef.current?.click()} disabled={!identity || busy}><Image size={19} /></button>
             <button type="button" className={'dm-attach-btn ' + (isRecording ? 'recording' : '')} title={isRecording ? 'Stop voice note' : 'Record voice note'} onClick={toggleRecording} disabled={!identity || busy}>{isRecording ? <MicOff size={19} /> : <Mic size={19} />}</button>
-            <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} maxLength={1000} placeholder={identity ? 'Message…' : 'Unlock secure messaging to chat'} disabled={!identity || busy} />
+            <textarea rows={2} value={composer} onChange={event => setComposer(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); event.currentTarget.form?.requestSubmit(); } }} maxLength={1000} placeholder={identity ? 'Message… (Enter to send, Shift + Enter for a new line)' : 'Unlock secure messaging to chat'} disabled={!identity || busy} />
             <button className="button button-primary dm-send-button" disabled={busy || !composer.trim() || !identity} aria-label="Send encrypted message"><Send size={17} /></button>
           </form> : selected.requester_id === user.id
             ? <p className="dm-closed-note">Your request is waiting for @ {selected.otherUser.username} to accept. You can chat here after approval.</p>
@@ -1469,7 +1534,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
       </div>{tracks.map(track => <div className="track-row" key={track.id}><Music2 size={16} /><b>{track.title}</b><small>{track.artist}</small></div>)}
       <p className="microcopy">This is a rights-confirmed upload library, not an iTunes/Apple Music catalog or blanket music license.</p>
     </div>
-    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Connect your own payment account. VYRA does not take a platform share.</p></div></div>
+    <div className="settings-card"><div className="settings-card-head"><Crown /><div><h3>Creator subscriptions</h3><p>Bring your own Razorpay account. Each creator connects their own payment keys.</p></div></div>
       {paymentStatus && <p className="payment-note"><ShieldCheck /><span>Connected provider: <b>{paymentStatus.provider}</b>. Credentials remain encrypted on the server.</span></p>}
       <div className="settings-form">
         <label>PAYMENT PROVIDER<select value={provider} onChange={e => setProvider(e.target.value as 'razorpay' | 'stripe')}><option value="razorpay">Razorpay</option><option value="stripe">Stripe</option></select></label>
@@ -1478,7 +1543,7 @@ function SettingsPage({ token, user, onLogout, update, onCheckUpdates, onDownloa
         <button className="button button-primary" onClick={savePaymentKeys} disabled={busy || !keySecret || (provider === 'razorpay' && !keyId)}>{busy ? 'Encrypting securely…' : 'Save payment credentials'}</button>
         {paymentMessage && <p className="microcopy">{paymentMessage}</p>}
       </div>
-      <div className="payment-note"><ShieldCheck /><span>Credentials are encrypted server-side with AES-GCM and are never returned to the browser. This connects key storage only: live checkout, signed provider webhooks, subscription lifecycle, refunds and payment testing must be implemented before creators can charge subscribers.</span></div>
+      <div className="payment-note"><ShieldCheck /><span>Creators must create their own Razorpay API keys in their Razorpay Dashboard and enter them here. VYRA does not issue shared keys or ask creators to send secrets in chat; submitted credentials are encrypted server-side and never returned to the browser. This is secure key storage only—live checkout, verified webhooks and subscription renewals still need to be completed before charging subscribers.</span></div>
     </div>
     <div className="settings-card account-danger"><div className="settings-card-head"><LogOut /><div><h3>Sign out</h3><p>End your VYRA session on this device.</p></div></div><button className="button button-soft" onClick={onLogout}>Log out of @{user.username}</button></div>
   </div>;

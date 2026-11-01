@@ -300,6 +300,21 @@ Deno.serve(async (req: Request) => {
       if (error) throw error;
       return response({ posts: await enrichPosts(rows || [], current.profile.id) }, 200, origin);
     }
+    if (action === "delete-own-post") {
+      const current = requireUser();
+      const postId = String(body.postId || "");
+      if (!/^[0-9a-f-]{36}$/i.test(postId)) return fail("Choose a valid post to delete.", 422, origin);
+      const { data: post, error: lookupError } = await db.from("posts")
+        .select("id,media_path,user_id").eq("id", postId).eq("user_id", current.profile.id).maybeSingle();
+      if (lookupError) throw lookupError;
+      if (!post) return fail("This post was not found on your creator account.", 404, origin);
+      const { data: deleted, error: deleteError } = await db.from("posts").delete()
+        .eq("id", postId).eq("user_id", current.profile.id).select("id").maybeSingle();
+      if (deleteError) throw deleteError;
+      if (!deleted) return fail("The post could not be deleted. Refresh and try again.", 409, origin);
+      const { error: storageError } = await db.storage.from("media").remove([post.media_path]);
+      return response({ ok: true, storageCleanupPending: !!storageError }, 200, origin);
+    }
     if (action === "search-users" || action === "suggestions") {
       const current = requireUser();
       let query = db.from("profiles").select("*").neq("id", current.profile.id).order("follower_count", { ascending: false }).limit(8);
@@ -699,6 +714,26 @@ Deno.serve(async (req: Request) => {
       const recipientId = conversation.user_a === current.profile.id ? conversation.user_b : conversation.user_a;
       await db.from("notifications").insert({ user_id:recipientId,actor_id:current.profile.id,type:"message",message:"@" + current.profile.username + " shared a post with you." });
       return response({ message },201,origin);
+    }
+
+    if (action === "dm-call-ice-config") {
+      const current = requireUser();
+      const iceServers: any[] = [
+        { urls: ["stun:stun.l.google.com:19302"] },
+      ];
+      const turnUrls = (Deno.env.get("TURN_URLS") || "").split(",").map(value => value.trim()).filter(Boolean);
+      const turnSharedSecret = Deno.env.get("TURN_SHARED_SECRET") || "";
+      if (turnUrls.length && turnSharedSecret) {
+        // Coturn REST API credentials expire after one hour; never expose a long-lived TURN password.
+        const username = String(Math.floor(Date.now() / 1000) + 3600) + ":" + current.profile.id;
+        const hmacKey = await crypto.subtle.importKey(
+          "raw", new TextEncoder().encode(turnSharedSecret), { name: "HMAC", hash: "SHA-1" }, false, ["sign"],
+        );
+        const signature = new Uint8Array(await crypto.subtle.sign("HMAC", hmacKey, new TextEncoder().encode(username)));
+        const credential = btoa(String.fromCharCode(...signature));
+        iceServers.push({ urls: turnUrls, username, credential });
+      }
+      return response({ iceServers, turnConfigured: iceServers.length > 1 }, 200, origin);
     }
 
     if (action === "dm-call-start") {
