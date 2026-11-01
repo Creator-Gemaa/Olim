@@ -1,3 +1,25 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="VYRA">
-<defs><linearGradient id="vyra" x1="110" y1="95" x2="410" y2="415" gradientUnits="userSpaceOnUse"><stop stop-color="#72F2E3"/><stop offset=".48" stop-color="#8B8BFF"/><stop offset="1" stop-color="#F28ACB"/></linearGradient><radialGradient id="glow" cx="0" cy="0" r="1" gradientTransform="matrix(0 320 -320 0 256 170)" gradientUnits="userSpaceOnUse"><stop stop-color="#243A69"/><stop offset="1" stop-color="#0B1020" stop-opacity="0"/></radialGradient></defs>
-<rect width="512" height="512" rx="116" fill="#0B1020"/><rect width="512" height="512" rx="116" fill="url(#glow)"/><circle cx="256" cy="256" r="188" fill="none" stroke="#FFFFFF" stroke-opacity=".09" stroke-width="2"/><path d="M132 148 232 347c11 22 19 33 24 33s13-11 24-33l100-199" fill="none" stroke="url(#vyra)" stroke-width="58" stroke-linecap="round" stroke-linejoin="round"/><path d="M171 111c25-20 54-30 85-30 31 0 60 10 85 30" fill="none" stroke="#FFFFFF" stroke-opacity=".75" stroke-width="8" stroke-linecap="round"/><circle cx="256" cy="80" r="11" fill="#72F2E3"/></svg>
+  <defs>
+    <linearGradient id="vyra" x1="110" y1="95" x2="405" y2="420" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#B99CFF"/>
+      <stop offset=".52" stop-color="#8B5CF6"/>
+      <stop offset="1" stop-color="#F15AC8"/>
+    </linearGradient>
+    <linearGradient id="orbit" x1="105" y1="390" x2="410" y2="125" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6D5BFF"/>
+      <stop offset="1" stop-color="#FF65D4"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="124" fill="#0A0717"/>
+  <rect x="15" y="15" width="482" height="482" rx="112" fill="none" stroke="url(#orbit)" stroke-opacity=".38" stroke-width="5"/>
+  <circle cx="256" cy="256" r="194" fill="none" stroke="#B59BFF" stroke-opacity=".08" stroke-width="2"/>
+  <path d="M105 334c45 41 98 62 157 62 68 0 126-28 171-83" fill="none" stroke="url(#orbit)" stroke-width="12" stroke-linecap="round" opacity=".8" filter="url(#glow)"/>
+  <path d="M139 139 228 344c10 23 20 35 28 35s18-12 28-35l89-205" fill="none" stroke="url(#vyra)" stroke-width="55" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"/>
+  <path d="M220 203 320 256 220 309Z" fill="#F9F5FF" opacity=".96"/>
+  <path d="M348 100l9 23 23 9-23 9-9 23-9-23-23-9 23-9Z" fill="#F6B8FF"/>
+  <circle cx="134" cy="383" r="7" fill="#A78BFA"/>
+</svg>
