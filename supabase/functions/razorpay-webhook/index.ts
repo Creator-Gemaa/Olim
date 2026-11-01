@@ -13,12 +13,11 @@ function hex(bytes: Uint8Array) {
 function fromB64(value: string) {
   return Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 }
-async function hmac(secret: string, message: Uint8Array | string) {
+async function hmac(secret: string, message: Uint8Array) {
   const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), {
     name: "HMAC", hash: "SHA-256",
   }, false, ["sign"]);
-  const input = typeof message === "string" ? new TextEncoder().encode(message) : message;
-  return hex(new Uint8Array(await crypto.subtle.sign("HMAC", key, input)));
+  return hex(new Uint8Array(await crypto.subtle.sign("HMAC", key, message)));
 }
 function constantTimeEqual(a: string, b: string) {
   if (a.length !== b.length) return false;
@@ -40,79 +39,98 @@ function isoFromUnix(value: unknown) {
   const number = Number(value);
   return Number.isFinite(number) && number > 0 ? new Date(number * 1000).toISOString() : null;
 }
+function json(data: unknown, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store" },
+  });
+}
 
 Deno.serve(async (request: Request) => {
-  if (request.method !== "POST") return new Response("Method not allowed", { status: 405 });
-  if (!SUPABASE_URL || !SERVICE_KEY || !ENCRYPTION_KEY) return new Response("Webhook is not configured", { status: 503 });
+  if (request.method !== "POST") return json({ error: "POST only." }, 405);
+  if (!SUPABASE_URL || !SERVICE_KEY || !ENCRYPTION_KEY) return json({ error: "Webhook is not configured." }, 503);
 
   try {
     const creatorId = new URL(request.url).searchParams.get("creator") || "";
-    if (!/^[0-9a-f-]{36}$/i.test(creatorId)) return new Response("Invalid creator", { status: 400 });
+    if (!/^[0-9a-f-]{36}$/i.test(creatorId)) return json({ error: "Invalid creator route." }, 400);
 
-    // Verify the original HTTP bytes with the webhook secret before parsing JSON.
+    // Read and authenticate the raw bytes before parsing the webhook payload.
     const rawBody = new Uint8Array(await request.arrayBuffer());
-    if (rawBody.length === 0 || rawBody.length > 1024 * 1024) return new Response("Invalid payload size", { status: 413 });
+    if (rawBody.length === 0 || rawBody.length > 1024 * 1024) return json({ error: "Invalid payload size." }, 413);
     const signature = request.headers.get("x-razorpay-signature") || "";
     const eventId = request.headers.get("x-razorpay-event-id") || "";
     if (!/^[a-f0-9]{64}$/i.test(signature) || !/^[A-Za-z0-9_-]{8,160}$/.test(eventId)) {
-      return new Response("Missing or invalid webhook signature headers", { status: 400 });
+      return json({ error: "Missing or invalid Razorpay signature headers." }, 400);
     }
 
     const { data: connection, error: connectionError } = await db.from("creator_payment_connections")
       .select("encrypted_credentials,billing_consent_at,provider")
       .eq("creator_id", creatorId).eq("provider", "razorpay").maybeSingle();
     if (connectionError) throw connectionError;
-    if (!connection?.billing_consent_at || !connection.encrypted_credentials) return new Response("Creator payment connection not found", { status: 404 });
+    if (!connection?.billing_consent_at || !connection.encrypted_credentials) return json({ error: "Creator payment connection not found." }, 404);
 
     const credentials = await decryptCredentials(connection.encrypted_credentials);
-    if (!credentials?.webhookSecret || !credentials?.keyId || !credentials?.keySecret) return new Response("Webhook credentials are incomplete", { status: 503 });
-    const expectedSignature = await hmac(credentials.webhookSecret, rawBody);
-    if (!constantTimeEqual(expectedSignature.toLowerCase(), signature.toLowerCase())) return new Response("Invalid webhook signature", { status: 401 });
+    if (!credentials?.webhookSecret) return json({ error: "Creator webhook secret is not configured." }, 503);
+    const expected = await hmac(credentials.webhookSecret, rawBody);
+    if (!constantTimeEqual(expected.toLowerCase(), signature.toLowerCase())) return json({ error: "Webhook signature verification failed." }, 401);
 
     const payload = JSON.parse(new TextDecoder().decode(rawBody));
     const eventType = String(payload?.event || "").slice(0, 120);
     const entity = payload?.payload?.subscription?.entity;
     const subscriptionId = String(entity?.id || "");
-    if (!eventType || !/^sub_[A-Za-z0-9]+$/.test(subscriptionId)) return new Response("Unsupported subscription webhook", { status: 400 });
+    const eventAt = isoFromUnix(payload?.created_at);
+    if (!eventType || !/^sub_[A-Za-z0-9]+$/.test(subscriptionId) || !eventAt) {
+      return json({ error: "Unsupported or incomplete subscription event." }, 400);
+    }
 
+    const statusByEvent: Record<string, string> = {
+      "subscription.authenticated": "pending",
+      "subscription.activated": "active",
+      "subscription.charged": "active",
+      "subscription.pending": "pending",
+      "subscription.halted": "halted",
+      "subscription.paused": "paused",
+      "subscription.resumed": "active",
+      "subscription.cancelled": "cancelled",
+      "subscription.completed": "completed",
+    };
+    const nextStatus = statusByEvent[eventType];
+    if (!nextStatus) return json({ ok: true, ignored: true, event: eventType });
+
+    const payloadHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)));
     const { data: storedSubscription, error: storedError } = await db.from("subscriptions")
-      .select("id,creator_id,subscriber_id,provider_subscription_id")
+      .select("id,creator_id,last_webhook_created_at")
       .eq("creator_id", creatorId).eq("provider", "razorpay")
       .eq("provider_subscription_id", subscriptionId).maybeSingle();
     if (storedError) throw storedError;
-    if (!storedSubscription) return new Response("Subscription record not found", { status: 404 });
+    // Return a retryable error if local checkout persistence has not completed yet.
+    if (!storedSubscription) return json({ error: "Subscription record not ready; retry this event." }, 503);
 
-    // Reconcile with Razorpay's current object so out-of-order events cannot
-    // roll a subscription back to an older state.
-    const remoteResponse = await fetch("https://api.razorpay.com/v1/subscriptions/" + encodeURIComponent(subscriptionId), {
-      headers: { Authorization: "Basic " + btoa(credentials.keyId + ":" + credentials.keySecret) },
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!remoteResponse.ok) return new Response("Could not reconcile Razorpay subscription", { status: 502 });
-    const remote = await remoteResponse.json();
-    const allowedStatuses = new Set(["created", "authenticated", "active", "pending", "halted", "cancelled", "completed", "paused"]);
-    const status = String(remote.status || "");
-    if (!allowedStatuses.has(status)) return new Response("Unknown subscription status", { status: 409 });
+    const alreadyNewer = storedSubscription.last_webhook_created_at
+      && new Date(storedSubscription.last_webhook_created_at).getTime() > new Date(eventAt).getTime();
+    if (!alreadyNewer) {
+      // The timestamp filter also protects against two distinct events racing.
+      const { data: updated, error: updateError } = await db.from("subscriptions").update({
+        status: nextStatus,
+        current_start_at: isoFromUnix(entity.current_start),
+        current_end_at: isoFromUnix(entity.current_end),
+        last_webhook_created_at: eventAt,
+        updated_at: new Date().toISOString(),
+      }).eq("id", storedSubscription.id).eq("creator_id", creatorId)
+        .or("last_webhook_created_at.is.null,last_webhook_created_at.lte." + eventAt)
+        .select("id").maybeSingle();
+      if (updateError) throw updateError;
+      // A newer event won the race. The older, valid event is still acknowledged.
+      void updated;
+    }
 
-    const payloadHash = hex(new Uint8Array(await crypto.subtle.digest("SHA-256", rawBody)));
-    const { error: updateError } = await db.from("subscriptions").update({
-      status: status === "created" || status === "authenticated" ? "pending" : status,
-      current_start_at: isoFromUnix(remote.current_start),
-      current_end_at: isoFromUnix(remote.current_end),
-      updated_at: new Date().toISOString(),
-    }).eq("id", storedSubscription.id).eq("creator_id", creatorId);
-    if (updateError) throw updateError;
-
-    const { error: eventError } = await db.from("razorpay_webhook_events").upsert({
+    const { error: eventError } = await db.from("razorpay_webhook_events").insert({
       provider_event_id: eventId, creator_id: creatorId, event_type: eventType,
       payload_hash: payloadHash, processed_at: new Date().toISOString(),
-    }, { onConflict: "provider_event_id", ignoreDuplicates: true });
-    if (eventError) throw eventError;
-    return new Response(JSON.stringify({ ok: true }), {
-      status: 200, headers: { "Content-Type": "application/json" },
     });
+    if (eventError && eventError.code !== "23505") throw eventError;
+    return json({ ok: true, duplicate: eventError?.code === "23505", stale: !!alreadyNewer });
   } catch {
-    // Never log or return merchant credentials or request payloads.
-    return new Response("Webhook processing failed", { status: 500 });
+    // Do not log or return credentials, raw payment data or webhook payloads.
+    return json({ error: "Webhook processing failed." }, 500);
   }
 });
