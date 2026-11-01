@@ -1,0 +1,1 @@
+alter table public.subscriptions add column if not exists last_webhook_created_at timestamptz; create index if not exists subscriptions_webhook_event_order_idx on public.subscriptions(creator_id,last_webhook_created_at);
