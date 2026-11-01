@@ -50,10 +50,16 @@ The native workflow builds and publishes both installers to [VYRA latest release
 ## Admin
 Press `Ctrl+Q` while signed in to the Owner account. Only Owner can verify creators, review posts and stories, register exact copyright hashes and feature approved videos in the world feed.
 
+## Creator controls, calling and payments
+- Creators can remove their own uploaded videos from their creator wall. The API checks ownership before deleting the database record and stored media.
+- Direct messages support client-side end-to-end encryption, photo and voice attachments, inbox search, connection status and keyboard sending.
+- Audio/video calls use WebRTC and Google STUN by default. For restrictive mobile/carrier networks, configure a Coturn-compatible REST-auth TURN service with Supabase Edge Function secrets `TURN_URLS` (comma-separated `turn:`/`turns:` URLs) and `TURN_SHARED_SECRET`. VYRA issues short-lived, per-user TURN credentials. Without TURN, some networks may still block peer-to-peer calls.
+- Each verified creator must provide their own Razorpay Key ID and Key Secret in Settings. VYRA does not issue or share payment keys; credentials are encrypted server-side.
+- Razorpay key storage is not live recurring billing. Checkout, verified payment webhooks, cancellations, refunds and subscription lifecycle handling still need implementation before creators can charge members.
+
 ## Feature boundaries
 - Copyright matching is exact SHA-256 comparison against an admin-managed list, not a global crawler or perceptual matching engine.
 - Audio uploads are for creator-owned or licensed music; this is not an iTunes/Apple Music catalog.
-- Payment keys can be stored encrypted, but live checkout, webhooks, refunds and subscription lifecycle handling are not enabled.
 
 ## Checks
 - `npm run test`
