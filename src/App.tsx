@@ -1910,6 +1910,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     );
     setPosts(items => apply(items, !wasLiked, delta));
     setWorldFeed(items => rankWorldFeed(apply(items, !wasLiked, delta)));
+    setReelsFeed(items => apply(items, !wasLiked, delta));
     try {
       const result = await callApi<{ liked: boolean }>('like', { postId: post.id }, token);
       if (result.liked !== !wasLiked) {
@@ -1917,10 +1918,12 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
         const correction = targetDelta - delta;
         setPosts(items => apply(items, result.liked, correction));
         setWorldFeed(items => rankWorldFeed(apply(items, result.liked, correction)));
+        setReelsFeed(items => apply(items, result.liked, correction));
       }
     } catch (error) {
       setPosts(items => apply(items, wasLiked, -delta));
       setWorldFeed(items => rankWorldFeed(apply(items, wasLiked, -delta)));
+      setReelsFeed(items => apply(items, wasLiked, -delta));
       setToast(error instanceof Error ? error.message : 'Could not update appreciation.');
     } finally { pendingLikesRef.current.delete(post.id); }
   }, [token]);
@@ -1931,6 +1934,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     const optimistic = (items: Post[], saved: boolean) => items.map(item => item.id === post.id ? { ...item, saved } : item);
     setPosts(items => optimistic(items, !wasSaved));
     setWorldFeed(items => optimistic(items, !wasSaved));
+    setReelsFeed(items => optimistic(items, !wasSaved));
     setSavedPosts(items => !wasSaved
       ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
       : items.filter(item => item.id !== post.id));
@@ -1938,6 +1942,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
       const result = await callApi<{ saved: boolean }>('save-post', { postId: post.id }, token);
       setPosts(items => optimistic(items, result.saved));
       setWorldFeed(items => optimistic(items, result.saved));
+      setReelsFeed(items => optimistic(items, result.saved));
       setSavedPosts(items => result.saved
         ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
         : items.filter(item => item.id !== post.id));
@@ -1945,6 +1950,7 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     } catch (error) {
       setPosts(items => optimistic(items, wasSaved));
       setWorldFeed(items => optimistic(items, wasSaved));
+      setReelsFeed(items => optimistic(items, wasSaved));
       setSavedPosts(items => wasSaved
         ? [{ ...post, saved: true }, ...items.filter(item => item.id !== post.id)]
         : items.filter(item => item.id !== post.id));
@@ -1956,12 +1962,14 @@ function AppShell({ user: startUser, token, onLogout }: { user: User; token: str
     if (!content) return;
     setPosts(items => items.map(item => item.id === post.id ? { ...item, comments_count: item.comments_count + 1 } : item));
     setWorldFeed(items => rankWorldFeed(items.map(item => item.id === post.id ? { ...item, comments_count: item.comments_count + 1 } : item)));
+    setReelsFeed(items => items.map(item => item.id === post.id ? { ...item, comments_count: item.comments_count + 1 } : item));
     try {
       await callApi('comment', { postId: post.id, content }, token);
       setToast('Comment shared.');
     } catch (error) {
       setPosts(items => items.map(item => item.id === post.id ? { ...item, comments_count: Math.max(0, item.comments_count - 1) } : item));
       setWorldFeed(items => rankWorldFeed(items.map(item => item.id === post.id ? { ...item, comments_count: Math.max(0, item.comments_count - 1) } : item)));
+      setReelsFeed(items => items.map(item => item.id === post.id ? { ...item, comments_count: Math.max(0, item.comments_count - 1) } : item));
       setToast(error instanceof Error ? error.message : 'Could not post comment.');
       throw error;
     }
