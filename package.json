@@ -1,7 +1,7 @@
 {
   "name": "vyra-social",
   "private": true,
-  "version": "1.0.9",
+  "version": "1.0.10",
   "type": "module",
   "engines": {
     "node": ">=20.19.0"
@@ -62,7 +62,8 @@
             "x64"
           ]
         }
-      ]
+      ],
+      "legalTrademarks": "VYRA is a trademark of Gemaa Limited"
     },
     "nsis": {
       "oneClick": false,
@@ -80,6 +81,10 @@
         "repo": "Olim",
         "releaseType": "release"
       }
-    ]
+    ],
+    "copyright": "Copyright © 2026 Gemaa Limited"
+  },
+  "author": {
+    "name": "Gemaa Limited"
   }
 }
