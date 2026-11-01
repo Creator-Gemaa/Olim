@@ -637,12 +637,17 @@ Deno.serve(async (req: Request) => {
         const latestByGroup = new Map<string, any>();
         for (const message of latest || []) if (!latestByGroup.has(message.group_id)) latestByGroup.set(message.group_id, message);
         const memberCount = new Map<string, number>();
-        for (const member of members || []) memberCount.set(member.group_id, (memberCount.get(member.group_id) || 0) + 1);
+        const groupRole = new Map<string, string>();
+        for (const member of members || []) {
+          memberCount.set(member.group_id, (memberCount.get(member.group_id) || 0) + 1);
+          if (member.user_id === userId) groupRole.set(member.group_id, member.role);
+        }
         groupConversations.push(...(groups || []).map((group: any) => {
           const last = latestByGroup.get(group.id) || null;
           return {
             id: "group:" + group.id, group_id: group.id, type: "group", is_group: true,
             group_name: group.name, group_member_count: memberCount.get(group.id) || 0,
+            group_role: groupRole.get(group.id) || "member",
             status: "accepted", requester_id: userId,
             created_at: group.created_at, last_message_at: group.last_message_at,
             otherUser: {
@@ -1418,9 +1423,16 @@ Deno.serve(async (req: Request) => {
       ]);
       if (connectionError) throw connectionError;
       if (plansError) throw plansError;
+      const { data: latestWebhook, error: webhookError } = connection
+        ? await db.from("razorpay_webhook_events").select("processed_at,event_type")
+          .eq("creator_id", current.profile.id).order("processed_at", { ascending: false }).limit(1).maybeSingle()
+        : { data: null, error: null };
+      if (webhookError) throw webhookError;
       return response({
         followerCount, threshold: 20000, eligible,
         connection: connection || null, plans: plans || [],
+        webhookReady: !!latestWebhook,
+        lastWebhookAt: latestWebhook?.processed_at || null,
       }, 200, origin);
     }
     if (action === "connect-payment") {
@@ -1454,6 +1466,13 @@ Deno.serve(async (req: Request) => {
       });
       // Show this per-creator webhook secret once. It is stored only inside the encrypted credentials blob.
       return response({ ok: true, provider: "razorpay", connectedAt: consentAt, webhookUrl, webhookSecret: credentials.webhookSecret }, 200, origin);
+    }
+    if (action === "payment-webhook-config") {
+      const current = requireUser();
+      const { credentials } = await getMonetizationConnection(current.profile.id);
+      if (!credentials.webhookSecret) return fail("Webhook secret is missing; reconnect Razorpay to create a new one.", 409, origin);
+      const webhookUrl = SUPABASE_URL.replace(/\/$/, "") + "/functions/v1/razorpay-webhook?creator_id=" + current.profile.id;
+      return response({ webhookUrl, webhookSecret: credentials.webhookSecret }, 200, origin);
     }
     if (action === "payment-status") {
       const current = requireUser();
@@ -1533,14 +1552,14 @@ Deno.serve(async (req: Request) => {
       const { data: existing, error: existingError } = await db.from("subscriptions")
         .select("id,status,current_end_at").eq("creator_id", plan.creator_id)
         .eq("subscriber_id", current.profile.id).eq("membership_plan_id", plan.id)
-        .in("status", ["created","authenticated","active","pending","halted"]).maybeSingle();
+        .in("status", ["created","authenticated","active","pending","halted"]).limit(1).maybeSingle();
       if (existingError) throw existingError;
       if (existing && existing.status === "active" && (!existing.current_end_at || new Date(existing.current_end_at).getTime() > Date.now())) {
         return fail("You already have an active membership for this plan.", 409, origin);
       }
       const totalCount = plan.period === "monthly" ? 120 : 10;
       const razorpaySub = await razorpayRequest(credentials, "subscriptions", {
-        plan_id: plan.razorpay_plan_id, total_count: totalCount, quantity: plan.interval,
+        plan_id: plan.razorpay_plan_id, total_count: totalCount, quantity: 1,
         customer_notify: true,
         notes: {
           vyra_creator_id: plan.creator_id, vyra_subscriber_id: current.profile.id,
