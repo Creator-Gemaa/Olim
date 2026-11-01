@@ -1576,8 +1576,10 @@ Deno.serve(async (req: Request) => {
       if (!connection) return fail("The creator's Razorpay connection is no longer available.", 409, origin);
       const expected = await hmacHex(connection.credentials.keySecret, paymentId + "|" + subscriptionId);
       if (!constantTimeEqual(expected.toLowerCase(), signature.toLowerCase())) return fail("Razorpay payment signature could not be verified.", 403, origin);
+      const verifiedAt = new Date().toISOString();
       const { error: updateError } = await db.from("subscriptions").update({
-        status: "active", razorpay_payment_id: paymentId, updated_at: new Date().toISOString(),
+        status: "active", razorpay_payment_id: paymentId,
+        last_webhook_created_at: verifiedAt, updated_at: verifiedAt,
       }).eq("id", subscription.id);
       if (updateError) throw updateError;
       await db.from("notifications").insert({
