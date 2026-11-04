@@ -1,4 +1,4 @@
-name: Build RealCM 0.3.0 Windows installer
+name: Build RealCM 0.3.1 Windows installer
 
 on:
   push:
@@ -33,6 +33,26 @@ jobs:
           [IO.File]::WriteAllBytes("$env:GITHUB_WORKSPACE\realcm-source.tar.gz", $archive)
           tar -xzf "$env:GITHUB_WORKSPACE\realcm-source.tar.gz" -C $env:GITHUB_WORKSPACE
           if (-not (Test-Path "$env:GITHUB_WORKSPACE\realcm-app\package.json")) { throw 'RealCM source extraction failed.' }
+
+      - name: Fix Electron production asset paths
+        working-directory: realcm-app
+        shell: pwsh
+        run: |
+          @'
+          import { defineConfig } from 'vitest/config';
+          import react from '@vitejs/plugin-react';
+
+          export default defineConfig({
+            base: './',
+            plugins: [react()],
+            server: { host: '127.0.0.1', port: 5173, strictPort: true },
+            test: { environment: 'node' }
+          });
+          '@ | Set-Content -Path vite.config.ts -Encoding utf8
+
+      - name: Set release version
+        working-directory: realcm-app
+        run: npm version 0.3.1 --no-git-tag-version
 
       - name: Install dependencies
         working-directory: realcm-app
@@ -99,6 +119,15 @@ jobs:
         working-directory: realcm-app
         run: npm run build
 
+      - name: Verify Electron-relative asset paths
+        working-directory: realcm-app
+        shell: pwsh
+        run: |
+          $html = Get-Content dist/index.html -Raw
+          if ($html -notmatch 'src="./assets/' -or $html -notmatch 'href="./assets/') {
+            throw 'Production assets are not relative. The Electron file:// window would not load the UI.'
+          }
+
       - name: Package Windows installer
         working-directory: realcm-app
         run: npm run desktop:package
@@ -106,7 +135,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: RealCM-Setup-0.3.0-Windows-x64
-          path: realcm-app/release/RealCM-Setup-0.3.0.exe
+          name: RealCM-Setup-0.3.1-Windows-x64
+          path: realcm-app/release/RealCM-Setup-0.3.1.exe
           if-no-files-found: error
           retention-days: 30
