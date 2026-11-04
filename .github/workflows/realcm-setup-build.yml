@@ -82,6 +82,15 @@ jobs:
           });
           '@ | Set-Content -Path src/lib/workspace.test.ts -Encoding utf8
 
+      - name: Remove unused overview state
+        working-directory: realcm-app
+        shell: pwsh
+        run: |
+          $path = 'src/App.tsx'
+          $source = Get-Content $path -Raw
+          $source = [regex]::Replace($source, '(?m)^\s*const \[usage, setUsage\] = useState\(0\);\r?\n', '')
+          Set-Content -Path $path -Value $source -Encoding utf8
+
       - name: Run tests
         working-directory: realcm-app
         run: npm test
