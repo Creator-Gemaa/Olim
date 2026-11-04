@@ -1,0 +1,64 @@
+name: Build RealCM 0.3.0 Windows installer
+
+on:
+  push:
+    branches: [realcm-setup-build]
+    paths:
+      - 'realcm-source/READY'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Reassemble and extract app source
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem realcm-source -Filter 'part-*.b64' | Sort-Object Name
+          if ($parts.Count -ne 10) { throw "Expected 10 source parts, found $($parts.Count)." }
+          $encoded = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $archive = [Convert]::FromBase64String($encoded)
+          [IO.File]::WriteAllBytes("$env:GITHUB_WORKSPACE\realcm-source.tar.gz", $archive)
+          tar -xzf "$env:GITHUB_WORKSPACE\realcm-source.tar.gz" -C $env:GITHUB_WORKSPACE
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\realcm-app\package.json")) { throw 'RealCM source extraction failed.' }
+
+      - name: Install dependencies
+        working-directory: realcm-app
+        run: npm install --no-audit --no-fund
+
+      - name: Create runtime environment template
+        working-directory: realcm-app
+        shell: pwsh
+        run: Copy-Item .env.example .env.local -Force
+
+      - name: Run tests
+        working-directory: realcm-app
+        run: npm test
+
+      - name: Build application
+        working-directory: realcm-app
+        run: npm run build
+
+      - name: Package Windows installer
+        working-directory: realcm-app
+        run: npm run desktop:package
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealCM-Setup-0.3.0-Windows-x64
+          path: realcm-app/release/RealCM-Setup-0.3.0.exe
+          if-no-files-found: error
+          retention-days: 30
