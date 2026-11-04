@@ -1,0 +1,64 @@
+name: Build RealCM Windows Installer
+
+on:
+  push:
+    branches: [realcm-app]
+    paths:
+      - 'realcm-source/READY'
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows-x64:
+    name: Test and package RealCM Windows x64
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout source branch
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Reassemble source archive
+        shell: pwsh
+        run: |
+          $parts = Get-ChildItem realcm-source -Filter 'part-*.b64' | Sort-Object Name
+          if ($parts.Count -ne 11) { throw "Expected 11 archive parts, found $($parts.Count)." }
+          $encoded = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
+          $bytes = [Convert]::FromBase64String($encoded)
+          [IO.File]::WriteAllBytes((Join-Path $env:GITHUB_WORKSPACE 'realcm-source.zip'), $bytes)
+          Expand-Archive -LiteralPath (Join-Path $env:GITHUB_WORKSPACE 'realcm-source.zip') -DestinationPath $env:GITHUB_WORKSPACE -Force
+          if (-not (Test-Path (Join-Path $env:GITHUB_WORKSPACE 'realcm-app/package.json'))) { throw 'RealCM source archive did not expand correctly.' }
+
+      - name: Install dependencies
+        working-directory: realcm-app
+        run: npm install --no-audit --no-fund
+
+      - name: Configure public app environment
+        working-directory: realcm-app
+        shell: pwsh
+        run: Copy-Item .env.example .env.local -Force
+
+      - name: Run unit tests
+        working-directory: realcm-app
+        run: npm test
+
+      - name: Build production app
+        working-directory: realcm-app
+        run: npm run build
+
+      - name: Package Windows installer
+        working-directory: realcm-app
+        run: npm run desktop:package
+
+      - name: Upload RealCM installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: RealCM-Windows-x64-Setup
+          path: realcm-app/release/RealCM-Setup-0.2.0.exe
+          if-no-files-found: error
+          retention-days: 14
