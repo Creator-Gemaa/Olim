@@ -43,6 +43,45 @@ jobs:
         shell: pwsh
         run: Copy-Item .env.example .env.local -Force
 
+      - name: Fix invalid JSON escaping in Windows path test
+        working-directory: realcm-app
+        shell: pwsh
+        run: |
+          @'
+          import { describe, expect, it } from 'vitest';
+          import { parseGeneratedFiles } from './workspace';
+
+          describe('parseGeneratedFiles', () => {
+            it('parses a JSON response wrapped in a markdown code fence', () => {
+              const files = parseGeneratedFiles('```json\n{"files":[{"path":"src/App.tsx","content":"export default 1"}]}\n```');
+              expect(files).toEqual([{ path: 'src/App.tsx', content: 'export default 1' }]);
+            });
+
+            it('normalizes Windows separators and removes a leading slash', () => {
+              const files = parseGeneratedFiles(JSON.stringify({ files: [{ path: '/src\\components\\Card.tsx', content: 'ok' }] }));
+              expect(files[0].path).toBe('src/components/Card.tsx');
+            });
+
+            it('rejects directory traversal', () => {
+              expect(() => parseGeneratedFiles('{"files":[{"path":"../../outside.txt","content":"bad"}]}')).toThrow(/unsafe file path/i);
+            });
+
+            it('rejects unsupported path characters', () => {
+              expect(() => parseGeneratedFiles('{"files":[{"path":"src/hello world.ts","content":"bad"}]}')).toThrow(/unsupported path characters/i);
+            });
+
+            it('rejects more than 30 files', () => {
+              const files = Array.from({ length: 31 }, (_, index) => ({ path: `file-${index}.txt`, content: 'x' }));
+              expect(() => parseGeneratedFiles(JSON.stringify({ files }))).toThrow(/between 1 and 30/i);
+            });
+
+            it('rejects invalid model output', () => {
+              expect(() => parseGeneratedFiles('not JSON')).toThrow();
+              expect(() => parseGeneratedFiles('{"items":[]}')).toThrow(/files array/i);
+            });
+          });
+          '@ | Set-Content -Path src/lib/workspace.test.ts -Encoding utf8
+
       - name: Run tests
         working-directory: realcm-app
         run: npm test
