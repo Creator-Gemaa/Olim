@@ -1,4 +1,4 @@
-name: Build RealCM 0.3.1 Windows installer
+name: Build RealCM 0.4.0 Windows installer
 
 on:
   push:
@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 50
+    timeout-minutes: 60
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -27,11 +27,11 @@ jobs:
         shell: pwsh
         run: |
           $parts = Get-ChildItem realcm-source -Filter 'part-*.b64' | Sort-Object Name
-          if ($parts.Count -ne 10) { throw "Expected 10 source parts, found $($parts.Count)." }
+          if ($parts.Count -ne 11) { throw "Expected 11 source pieces, found $($parts.Count)." }
           $encoded = ($parts | ForEach-Object { (Get-Content $_.FullName -Raw).Trim() }) -join ''
           $archive = [Convert]::FromBase64String($encoded)
-          [IO.File]::WriteAllBytes("$env:GITHUB_WORKSPACE\realcm-source.tar.gz", $archive)
-          tar -xzf "$env:GITHUB_WORKSPACE\realcm-source.tar.gz" -C $env:GITHUB_WORKSPACE
+          [IO.File]::WriteAllBytes("$env:GITHUB_WORKSPACE\realcm-source.tar.xz", $archive)
+          tar -xJf "$env:GITHUB_WORKSPACE\realcm-source.tar.xz" -C $env:GITHUB_WORKSPACE
           if (-not (Test-Path "$env:GITHUB_WORKSPACE\realcm-app\package.json")) { throw 'RealCM source extraction failed.' }
 
       - name: Fix Electron production asset paths
@@ -52,7 +52,7 @@ jobs:
 
       - name: Set release version
         working-directory: realcm-app
-        run: npm version 0.3.1 --no-git-tag-version
+        run: npm version 0.4.0 --no-git-tag-version
 
       - name: Install dependencies
         working-directory: realcm-app
@@ -73,12 +73,12 @@ jobs:
 
           describe('parseGeneratedFiles', () => {
             it('parses a JSON response wrapped in a markdown code fence', () => {
-              const files = parseGeneratedFiles('```json\n{"files":[{"path":"src/App.tsx","content":"export default 1"}]}\n```');
+              const files = parseGeneratedFiles('\\`\\`\\`json\\n{"files":[{"path":"src/App.tsx","content":"export default 1"}]}\\n\\`\\`\\`');
               expect(files).toEqual([{ path: 'src/App.tsx', content: 'export default 1' }]);
             });
 
             it('normalizes Windows separators and removes a leading slash', () => {
-              const files = parseGeneratedFiles(JSON.stringify({ files: [{ path: '/src\\components\\Card.tsx', content: 'ok' }] }));
+              const files = parseGeneratedFiles(JSON.stringify({ files: [{ path: '/src\\\\components\\\\Card.tsx', content: 'ok' }] }));
               expect(files[0].path).toBe('src/components/Card.tsx');
             });
 
@@ -108,7 +108,7 @@ jobs:
         run: |
           $path = 'src/App.tsx'
           $source = Get-Content $path -Raw
-          $source = [regex]::Replace($source, '(?m)^\s*const \[usage, setUsage\] = useState\(0\);\r?\n', '')
+          $source = [regex]::Replace($source, '(?m)^\\s*const \\[usage, setUsage\\] = useState\\(0\\);\\r?\\n', '')
           Set-Content -Path $path -Value $source -Encoding utf8
 
       - name: Run tests
@@ -135,7 +135,7 @@ jobs:
       - name: Upload installer
         uses: actions/upload-artifact@v4
         with:
-          name: RealCM-Setup-0.3.1-Windows-x64
-          path: realcm-app/release/RealCM-Setup-0.3.1.exe
+          name: RealCM-Setup-0.4.0-Windows-x64
+          path: realcm-app/release/RealCM-Setup-0.4.0.exe
           if-no-files-found: error
           retention-days: 30
