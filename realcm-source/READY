@@ -1,1 +1,1 @@
-RealCM 0.3.1 rebuild: fix relative Vite asset paths for Electron file loading, verify production output, and package Windows x64 installer.
+RealCM 0.4.0: admin-managed shared models, model selectors for Chat and API keys, automatic model catalogue refresh, and updated desktop UI.
